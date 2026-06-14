@@ -388,8 +388,8 @@ window.addEventListener("DOMContentLoaded", () => {
   checkAuth();
   loadChallengePreview();
   fetchLatestCommit();
-  if (currentUser) { createLobby(); }
-  else { document.getElementById("modal-guest").classList.remove("hidden"); document.getElementById("input-guest-name").value = ""; }
+  //if (currentUser) { createLobby(); }
+  //else { document.getElementById("modal-guest").classList.remove("hidden"); document.getElementById("input-guest-name").value = ""; }
 
   // Auth modal
   document.getElementById("btn-open-auth").onclick = () => {

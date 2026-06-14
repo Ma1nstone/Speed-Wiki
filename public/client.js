@@ -385,7 +385,7 @@ async function fetchWikiPage(title, lang = "en") {
 
 // ─── DOM Ready ────────────────────────────────────────────────────────────────
 window.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("btn-open-friends-lobby")?.classList.add("hidden");
+  document.getElementById("modal-guest")?.classList.add("hidden");
   checkAuth();
   loadChallengePreview();
   fetchLatestCommit();

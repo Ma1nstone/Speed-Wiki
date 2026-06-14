@@ -385,10 +385,11 @@ async function fetchWikiPage(title, lang = "en") {
 
 // ─── DOM Ready ────────────────────────────────────────────────────────────────
 window.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("modal-guest")?.classList.add("hidden");
   checkAuth();
   loadChallengePreview();
   fetchLatestCommit();
+  if (currentUser) { createLobby(); }
+  else { document.getElementById("modal-guest").classList.remove("hidden"); document.getElementById("input-guest-name").value = ""; }
 
   // Auth modal
   document.getElementById("btn-open-auth").onclick = () => {
@@ -438,8 +439,7 @@ window.addEventListener("DOMContentLoaded", () => {
 document.getElementById("btn-create-lobby").onclick = () => {
     createLobby();
   };
-  if (currentUser) { createLobby(); }
-  else { document.getElementById("modal-guest").classList.remove("hidden"); document.getElementById("input-guest-name").value = ""; }
+  
 
 document.getElementById("btn-guest-cancel").onclick = () => document.getElementById("modal-guest").classList.add("hidden");
 document.getElementById("btn-guest-confirm").onclick = () => {

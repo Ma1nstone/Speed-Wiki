@@ -429,6 +429,10 @@ document.getElementById("btn-how-close").onclick = () => document.getElementById
 
 // Friends
 document.getElementById("btn-open-friends").onclick = () => { document.getElementById("modal-friends").classList.remove("hidden"); loadFriends(); };
+document.getElementById("btn-open-friends-lobby").onclick = () => {
+  document.getElementById("modal-friends").classList.remove("hidden");
+  loadFriends();
+};
 document.getElementById("btn-friends-close").onclick = () => document.getElementById("modal-friends").classList.add("hidden");
 document.getElementById("btn-friends-add").onclick = async () => {
   const username = document.getElementById("friends-add-input").value.trim();

@@ -28,13 +28,6 @@ socket.on("server:online", ({ count }) => {
   document.getElementById("lobby-online-count")?.textContent !== undefined && (document.getElementById("lobby-online-count").textContent = count);
 });
 
-function saveSession() {
-  localStorage.setItem("wikiSession", JSON.stringify({
-    playerName,
-    roomCode,
-    isHost
-  }));
-}
 
 function loadSession() {
   try {
@@ -392,6 +385,7 @@ async function fetchWikiPage(title, lang = "en") {
 
 // ─── DOM Ready ────────────────────────────────────────────────────────────────
 window.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("btn-open-friends-lobby")?.classList.add("hidden");
   checkAuth();
   loadChallengePreview();
   fetchLatestCommit();

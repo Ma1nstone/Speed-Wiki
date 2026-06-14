@@ -55,7 +55,11 @@ app.post('/api/register', async (req, res) => {
     const user = await User.create({ username, password: hash });
     req.session.userId = user._id;
     req.session.username = user.username;
-    res.json({ success: true, username: user.username });
+    res.json({
+      success: true,
+      username: user.username,
+      userId: user._id
+    });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -70,7 +74,11 @@ app.post('/api/login', async (req, res) => {
     if (!match) return res.status(400).json({ error: 'Invalid username or password' });
     req.session.userId = user._id;
     req.session.username = user.username;
-    res.json({ success: true, username: user.username });
+    res.json({
+      success: true,
+      username: user.username,
+      userId: user._id
+    });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -206,7 +214,7 @@ app.get('/portal', (req, res) => {
 });
 
 // ─── Race Challenges ──────────────────────────────────────────────────────────
-const { RACE_CHALLENGES } = require('./RaceChallenges');
+const { RACE_CHALLENGES } = require('./RaceChallenges.js');
 
 app.get('/api/challenges', (req, res) => {
   res.json(RACE_CHALLENGES.map(c => ({ start: c.start, target: c.target })));

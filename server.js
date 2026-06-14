@@ -398,17 +398,27 @@ io.on('connection', (socket) => {
     userSockets.set(userId.toString(), socket.id);
   }
 
-  socket.on('invite:send', ({ toId, roomCode }) => {
+  socket.on('invite:send', ({ toId, roomCode }, callback) => {
     const targetSocketId = userSockets.get(toId?.toString());
 
+    // NOT ONLINE
     if (!targetSocketId) {
+      if (typeof callback === "function") {
+        return callback({ success: false, reason: "offline" });
+      }
       return socket.emit('error', { msg: 'User is offline' });
     }
 
+    // SEND INVITE
     io.to(targetSocketId).emit('invite:receive', {
       fromUsername: username,
       roomCode
     });
+
+    // CONFIRM BACK TO SENDER
+    if (typeof callback === "function") {
+      callback({ success: true });
+    }
   });
 
   socket.on('lobby:create', ({ playerName }) => {

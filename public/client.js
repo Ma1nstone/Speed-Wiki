@@ -194,11 +194,21 @@ async function declineFriend(fromId) {
 
 function inviteFriend(friendId, friendUsername) {
   const ensureLobbyThenInvite = () => {
-    socket.emit("invite:send", {
-      toId: friendId,
-      toUsername: friendUsername,
-      roomCode
-    });
+    socket.emit(
+      "invite:send",
+      {
+        toId: friendId,
+        toUsername: friendUsername,
+        roomCode
+      },
+      (res) => {
+        if (res?.success) {
+          showToast(`Invite sent to ${friendUsername}!`, "success");
+        } else {
+          showToast(`${friendUsername} is offline`, "error");
+        }
+      }
+    );
 
     showToast(`Invite sent to ${friendUsername}!`, "success");
   };

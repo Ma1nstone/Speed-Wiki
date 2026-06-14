@@ -813,10 +813,25 @@ input { font-family: inherit; }
 .messages-header { display:flex; align-items:center; margin-bottom:16px; }
 
 /* ── Stats ── */
-.stats-content { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:12px 0; }
+.stats-content { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin:12px 0; }
 .stat-card { background:var(--surface-soft); border:1px solid var(--border); border-radius:var(--radius); padding:12px; text-align:center; }
 .stat-card .stat-val { font-size:1.6rem; font-weight:700; color:var(--blue); }
 .stat-card .stat-label { font-size:.72rem; color:var(--ink-muted); text-transform:uppercase; letter-spacing:.06em; margin-top:2px; }
-.stats-history { margin-top:16px; }
-.stats-history-item { display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border); font-size:.85rem; }
 .friends-add-row { display:flex; align-items:center; }
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.status-dot.online {
+  background: #2ecc71;
+  box-shadow: 0 0 6px #2ecc71aa;
+}
+
+.status-dot.offline {
+  background: #e74c3c;
+  box-shadow: 0 0 6px #e74c3c66;
+}

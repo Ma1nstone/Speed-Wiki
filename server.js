@@ -180,7 +180,7 @@ app.post('/api/friends/decline', requireAuth, async (req, res) => {
 app.get('/api/friends', requireAuth, async (req, res) => {
   try {
     const me = await User.findById(req.session.userId)
-      .populate('friends', 'username')
+      .populate('friends', 'username _id')
       .populate('friendRequests.from', 'username');
 
     res.json({ friends: me.friends, requests: me.friendRequests });
@@ -394,8 +394,11 @@ io.on('connection', (socket) => {
   const userId = socket.request.session?.userId;
   const username = socket.request.session?.username;
 
+  socket.data.userId = userId?.toString();
+
   if (userId) {
     userSockets.set(userId.toString(), socket.id);
+    io.emit("user:online", { userId: userId.toString() });
   }
 
   socket.on('invite:send', ({ toId, roomCode }, callback) => {
@@ -413,6 +416,9 @@ io.on('connection', (socket) => {
     io.to(targetSocketId).emit('invite:receive', {
       fromUsername: username,
       roomCode
+    });
+    io.emit("presence:init", {
+      online: Array.from(userSockets.keys())
     });
 
     // CONFIRM BACK TO SENDER
@@ -620,8 +626,11 @@ io.on('connection', (socket) => {
     broadcastOnlineCount();
     handleLeave(socket);
 
-    if (userId) {
-      userSockets.delete(userId.toString());
+    const uid = socket.data.userId;
+
+    if (uid) {
+      userSockets.delete(uid);
+      io.emit("user:offline", { userId: uid });
     }
 
     console.log(`[-] ${socket.id} disconnected | total: ${onlineCount}`);

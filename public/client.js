@@ -17,6 +17,7 @@ let lastTickTime = null;
 let inGame = false;
 let currentUser = null; // { username, userId } or null if guest
 let activeChatId = null; // userId of open conversation
+let onlineUsers = new Set();
 
 const BLOCKED_PREFIXES = ["Wikipedia:", "Help:", "Template:", "Category:", "File:", "Special:", "Talk:", "User:", "Portal:", "Draft:", "Module:", "MediaWiki:"];
 const WIKI_API = "https://en.wikipedia.org/w/api.php";
@@ -27,7 +28,20 @@ socket.on("server:online", ({ count }) => {
   document.getElementById("home-online-count")?.textContent !== undefined && (document.getElementById("home-online-count").textContent = count);
   document.getElementById("lobby-online-count")?.textContent !== undefined && (document.getElementById("lobby-online-count").textContent = count);
 });
+socket.on("presence:init", ({ online }) => {
+  onlineUsers = new Set(online);
+  loadFriends(); // refresh UI
+});
 
+socket.on("user:online", ({ userId }) => {
+  onlineUsers.add(userId);
+  loadFriends();
+});
+
+socket.on("user:offline", ({ userId }) => {
+  onlineUsers.delete(userId);
+  loadFriends();
+});
 
 function loadSession() {
   try {
@@ -134,12 +148,23 @@ async function loadFriends() {
   try {
     const res = await fetch('/api/friends');
     const data = await res.json();
+    const isOnline = onlineUsers.has(f._id.toString());
     if (data.error) return;
 
     const reqSection = document.getElementById("friends-requests-section");
     const reqList = document.getElementById("friends-requests-list");
     const list = document.getElementById("friends-list");
     document.getElementById("friends-count").textContent = data.friends.length;
+    li.innerHTML = `
+      <span class="player-name" style="flex:1;display:flex;align-items:center;gap:8px;">
+        <span class="status-dot ${isOnline ? "online" : "offline"}"></span>
+        ${f.username}
+      </span>
+      <button class="btn btn-ghost" style="padding:4px 10px;font-size:.8rem"
+        onclick="openChatWith('${f._id}','${f.username}')">Message</button>
+      <button class="btn btn-primary" style="padding:4px 10px;font-size:.8rem"
+        onclick="inviteFriend('${f._id}','${f.username}')">Invite</button>
+    `;
 
     if (data.requests.length > 0) {
       reqSection.classList.remove("hidden");
@@ -209,8 +234,6 @@ function inviteFriend(friendId, friendUsername) {
         }
       }
     );
-
-    showToast(`Invite sent to ${friendUsername}!`, "success");
   };
 
   // If lobby already exists → send invite immediately

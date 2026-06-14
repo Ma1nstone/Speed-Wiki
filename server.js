@@ -2,8 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
-const userSockets = new Map(); 
-// userId -> Set(socketIds)
+const userSockets = new Map();
 
 const mongoose = require('mongoose');
 const session = require('express-session');
@@ -392,37 +391,24 @@ function handleLeave(socket) {
 
 // ─── Socket Events ────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
-  const userId = socket.handshake.session?.userId;
-  const username = socket.handshake.session?.username;
+  const userId = socket.request.session?.userId;
+  const username = socket.request.session?.username;
+
   if (userId) {
-    const id = userId.toString();
-
-    if (!userSockets.has(id)) {
-      userSockets.set(id, new Set());
-    }
-
-    userSockets.get(id).add(socket.id);
+    userSockets.set(userId.toString(), socket.id);
   }
 
   socket.on('invite:send', ({ toId, roomCode }) => {
-    const targetId = toId?.toString();
+    const targetSocketId = userSockets.get(toId?.toString());
 
-    if (!targetId) {
-      return socket.emit('error', { msg: 'Invalid user' });
-    }
-
-    const sockets = userSockets.get(targetId);
-
-    if (!sockets || sockets.size === 0) {
+    if (!targetSocketId) {
       return socket.emit('error', { msg: 'User is offline' });
     }
 
-    for (const socketId of sockets) {
-      io.to(socketId).emit('invite:receive', {
-        fromUsername: username || 'Unknown',
-        roomCode
-      });
-    }
+    io.to(targetSocketId).emit('invite:receive', {
+      fromUsername: username,
+      roomCode
+    });
   });
 
   socket.on('lobby:create', ({ playerName }) => {
@@ -625,16 +611,7 @@ io.on('connection', (socket) => {
     handleLeave(socket);
 
     if (userId) {
-      const id = userId.toString();
-      const set = userSockets.get(id);
-
-      if (set) {
-        set.delete(socket.id);
-
-        if (set.size === 0) {
-          userSockets.delete(id);
-        }
-      }
+      userSockets.delete(userId.toString());
     }
 
     console.log(`[-] ${socket.id} disconnected | total: ${onlineCount}`);

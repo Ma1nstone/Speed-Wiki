@@ -115,50 +115,27 @@ app.get('/api/me', (req, res) => {
 // ─── Friends routes ───────────────────────────────────────────────────────────
 app.post('/api/friends/request', requireAuth, async (req, res) => {
   try {
-    console.log("🔵 Friend request body:", req.body);
-    console.log("🔵 Session:", req.session);
-
     const { username } = req.body;
-
-    if (!username || typeof username !== "string") {
-      return res.status(400).json({ error: 'Invalid username payload' });
-    }
-
-    const target = await User.findOne({
-      username: new RegExp(`^${username}$`, 'i')
-    });
+    const target = await User.findOne({ username: new RegExp(`^${username}$`, 'i') });
 
     if (!target) return res.status(404).json({ error: 'User not found' });
-
     if (target._id.toString() === req.session.userId.toString()) {
       return res.status(400).json({ error: 'Cannot add yourself' });
     }
 
-    const me = await User.findById(req.session.userId);
-
-    const alreadyFriends = me.friends.some(
-      id => id.toString() === target._id.toString()
-    );
-
-    if (alreadyFriends) {
-      return res.status(400).json({ error: 'Already friends' });
-    }
+    const alreadyFriends = target.friends.includes(req.session.userId);
+    if (alreadyFriends) return res.status(400).json({ error: 'Already friends' });
 
     const alreadyRequested = target.friendRequests.some(
       r => r.from.toString() === req.session.userId.toString()
     );
-
-    if (alreadyRequested) {
-      return res.status(400).json({ error: 'Request already sent' });
-    }
+    if (alreadyRequested) return res.status(400).json({ error: 'Request already sent' });
 
     target.friendRequests.push({ from: req.session.userId });
     await target.save();
 
     res.json({ success: true });
-
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -203,7 +180,7 @@ app.post('/api/friends/decline', requireAuth, async (req, res) => {
 app.get('/api/friends', requireAuth, async (req, res) => {
   try {
     const me = await User.findById(req.session.userId)
-      .populate('friends', 'username _id')
+      .populate('friends', 'username')
       .populate('friendRequests.from', 'username');
 
     res.json({ friends: me.friends, requests: me.friendRequests });
@@ -417,11 +394,8 @@ io.on('connection', (socket) => {
   const userId = socket.request.session?.userId;
   const username = socket.request.session?.username;
 
-  socket.data.userId = userId?.toString();
-
   if (userId) {
     userSockets.set(userId.toString(), socket.id);
-    io.emit("user:online", { userId: userId.toString() });
   }
 
   socket.on('invite:send', ({ toId, roomCode }, callback) => {
@@ -439,9 +413,6 @@ io.on('connection', (socket) => {
     io.to(targetSocketId).emit('invite:receive', {
       fromUsername: username,
       roomCode
-    });
-    io.emit("presence:init", {
-      online: Array.from(userSockets.keys())
     });
 
     // CONFIRM BACK TO SENDER
@@ -649,11 +620,8 @@ io.on('connection', (socket) => {
     broadcastOnlineCount();
     handleLeave(socket);
 
-    const uid = socket.data.userId;
-
-    if (uid) {
-      userSockets.delete(uid);
-      io.emit("user:offline", { userId: uid });
+    if (userId) {
+      userSockets.delete(userId.toString());
     }
 
     console.log(`[-] ${socket.id} disconnected | total: ${onlineCount}`);

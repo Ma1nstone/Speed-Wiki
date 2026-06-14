@@ -28,6 +28,28 @@ socket.on("server:online", ({ count }) => {
   document.getElementById("lobby-online-count")?.textContent !== undefined && (document.getElementById("lobby-online-count").textContent = count);
 });
 
+function saveSession() {
+  localStorage.setItem("wikiSession", JSON.stringify({
+    playerName,
+    roomCode,
+    isHost
+  }));
+}
+
+function loadSession() {
+  try {
+    const data = JSON.parse(localStorage.getItem("wikiSession"));
+    if (!data) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function clearSession() {
+  localStorage.removeItem("wikiSession");
+}
+
 // ─── Screen switching ─────────────────────────────────────────────────────────
 function showScreen(name) {
   document.querySelectorAll(".screen").forEach(s => { s.classList.add("hidden"); s.classList.remove("active"); });
@@ -178,9 +200,36 @@ async function declineFriend(fromId) {
 }
 
 function inviteFriend(friendId, friendUsername) {
-  if (!roomCode) { showToast("Create a lobby first, then invite friends", "warning"); return; }
-  socket.emit("invite:send", { toId: friendId, toUsername: friendUsername, roomCode });
-  showToast(`Invite sent to ${friendUsername}!`, "success");
+  const ensureLobbyThenInvite = () => {
+    socket.emit("invite:send", {
+      toId: friendId,
+      toUsername: friendUsername,
+      roomCode
+    });
+
+    showToast(`Invite sent to ${friendUsername}!`, "success");
+  };
+
+  // If lobby already exists → send invite immediately
+  if (roomCode) {
+    ensureLobbyThenInvite();
+    return;
+  }
+
+  // Otherwise create lobby first, then wait for response
+  showToast("Creating lobby...", "info");
+
+  socket.once("lobby:created", ({ code }) => {
+    roomCode = code;
+    isHost = true;
+
+    document.getElementById("lobby-code-value").textContent = roomCode;
+    showScreen("lobby");
+
+    ensureLobbyThenInvite();
+  });
+
+  createLobby();
 }
 
 // ─── Messaging ────────────────────────────────────────────────────────────────

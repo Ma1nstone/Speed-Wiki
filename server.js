@@ -115,27 +115,50 @@ app.get('/api/me', (req, res) => {
 // ─── Friends routes ───────────────────────────────────────────────────────────
 app.post('/api/friends/request', requireAuth, async (req, res) => {
   try {
+    console.log("🔵 Friend request body:", req.body);
+    console.log("🔵 Session:", req.session);
+
     const { username } = req.body;
-    const target = await User.findOne({ username: new RegExp(`^${username}$`, 'i') });
+
+    if (!username || typeof username !== "string") {
+      return res.status(400).json({ error: 'Invalid username payload' });
+    }
+
+    const target = await User.findOne({
+      username: new RegExp(`^${username}$`, 'i')
+    });
 
     if (!target) return res.status(404).json({ error: 'User not found' });
+
     if (target._id.toString() === req.session.userId.toString()) {
       return res.status(400).json({ error: 'Cannot add yourself' });
     }
 
-    const alreadyFriends = target.friends.includes(req.session.userId);
-    if (alreadyFriends) return res.status(400).json({ error: 'Already friends' });
+    const me = await User.findById(req.session.userId);
+
+    const alreadyFriends = me.friends.some(
+      id => id.toString() === target._id.toString()
+    );
+
+    if (alreadyFriends) {
+      return res.status(400).json({ error: 'Already friends' });
+    }
 
     const alreadyRequested = target.friendRequests.some(
       r => r.from.toString() === req.session.userId.toString()
     );
-    if (alreadyRequested) return res.status(400).json({ error: 'Request already sent' });
+
+    if (alreadyRequested) {
+      return res.status(400).json({ error: 'Request already sent' });
+    }
 
     target.friendRequests.push({ from: req.session.userId });
     await target.save();
 
     res.json({ success: true });
+
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
 });

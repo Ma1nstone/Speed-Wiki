@@ -513,7 +513,7 @@ document.getElementById("btn-friends-close").onclick = () => document.getElement
 document.getElementById("btn-friends-add").onclick = async () => {
   const username = document.getElementById("friends-add-input").value.trim();
   if (!username) return;
-  const res = await fetch('/api/friends/request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username }) });
+  const res = await fetch('/api/friends/request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ username }) });
   const data = await res.json();
   if (data.error) showToast(data.error, "error");
   else { showToast(`Friend request sent to ${username}!`, "success"); document.getElementById("friends-add-input").value = ""; }

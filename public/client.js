@@ -54,7 +54,9 @@ socket.on("toast", ({ msg, type }) => showToast(msg, type));
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 async function checkAuth() {
   try {
-    const res = await fetch('/api/me');
+    const res = await fetch('/api/me', {
+      credentials: 'include'
+    });
     const data = await res.json();
     if (data.loggedIn) {
       currentUser = { username: data.username, userId: data.userId };
@@ -92,7 +94,14 @@ async function submitAuth(isRegister) {
 
   const endpoint = isRegister ? '/api/register' : '/api/login';
   try {
-    const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ username, password })
+    });
     const data = await res.json();
     if (data.error) { errorEl.textContent = data.error; errorEl.classList.remove("hidden"); return; }
     currentUser = { username: data.username };
@@ -368,7 +377,10 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // Logout
   document.getElementById("btn-logout").onclick = async () => {
-    await fetch('/api/logout', { method: 'POST' });
+    await fetch('/api/logout', {
+      method: 'POST',
+      credentials: 'include'
+    });
     currentUser = null; playerName = "";
     showLoggedOut();
     showToast("Logged out", "info");

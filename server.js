@@ -293,10 +293,11 @@ io.on('connection', (socket) => {
       roomCode
     });
   });
-});
   onlineCount++;
   broadcastOnlineCount();
   console.log(`[+] ${socket.id} connected | total: ${onlineCount}`);
+});
+  
 
   socket.on('lobby:create', ({ playerName }) => {
     if (!playerName?.trim()) return socket.emit('error', { msg: 'Name required' });

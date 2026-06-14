@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const userSockets = new Map();
 
 const mongoose = require('mongoose');
 const session = require('express-session');
@@ -277,14 +278,21 @@ function broadcastOnlineCount() {
 io.on('connection', (socket) => {
   const userId   = socket.handshake.session?.userId;
   const username = socket.handshake.session?.username;
-  socket.on('invite:send', ({ toId, toUsername, roomCode }) => {
-  // Find the socket of the target user and emit to them
-  for (const [id, s] of io.sockets.sockets) {
-    if (s.handshake.session?.userId?.toString() === toId.toString()) {
-      s.emit('invite:receive', { fromUsername: username, roomCode });
-      break;
-    }
+  if (socket.handshake.session?.userId) {
+    userSockets.set(socket.handshake.session.userId.toString(), socket.id);
   }
+  socket.on('invite:send', ({ toId, roomCode }) => {
+    const targetSocketId = userSockets.get(toId?.toString());
+
+    if (!targetSocketId) {
+      return socket.emit('error', { msg: 'User is offline' });
+    }
+
+    io.to(targetSocketId).emit('invite:receive', {
+      fromUsername: username,
+      roomCode
+    });
+  });
 });
   onlineCount++;
   broadcastOnlineCount();
@@ -454,6 +462,9 @@ io.on('connection', (socket) => {
     onlineCount = Math.max(0, onlineCount - 1);
     broadcastOnlineCount();
     handleLeave(socket);
+    if (socket.handshake.session?.userId) {
+      userSockets.delete(socket.handshake.session.userId.toString());
+    }
     console.log(`[-] ${socket.id} disconnected | total: ${onlineCount}`);
   });
 });

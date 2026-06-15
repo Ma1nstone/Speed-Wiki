@@ -267,51 +267,7 @@ async function loadFriends() {
         });
       });
     }
-  async function updateFriendStatusDots() {
-    try {
-      // 1. Get current friends list from server
-      const res = await fetch('/api/friends');
-      const data = await res.json();
-      if (data.error) return;
-
-      const friendIds = data.friends.map(f => f._id.toString());
-
-      // 2. Ask server who is online
-      let onlineIds = new Set();
-
-      if (friendIds.length > 0) {
-        await new Promise(resolve => {
-          socket.emit(
-            'users:online-check',
-            { userIds: friendIds },
-            ({ online }) => {
-              online.forEach(id => onlineIds.add(id.toString()));
-              resolve();
-            }
-          );
-        });
-      }
-
-      // 3. Update ONLY the green/grey dots
-      data.friends.forEach(f => {
-        const id = f._id.toString();
-
-        // find existing dot in DOM
-        const dot = document.getElementById(`status-dot-${id}`);
-        if (!dot) return;
-
-        const isOnline = onlineIds.has(id);
-
-        // only toggle classes, nothing else
-        dot.classList.toggle("online", isOnline);
-        dot.classList.toggle("offline", !isOnline);
-        dot.title = isOnline ? "Online" : "Offline";
-      });
-
-    } catch (err) {
-      console.error("Friend status update failed:", err);
-    }
-  }
+  
 
     const reqSection = document.getElementById("friends-requests-section");
     const reqList = document.getElementById("friends-requests-list");
@@ -416,6 +372,51 @@ async function openMessagesAndChat(userId, username) {
   } catch (e) {}
   startMessagesPolling();
 }
+async function updateFriendStatusDots() {
+    try {
+      // 1. Get current friends list from server
+      const res = await fetch('/api/friends');
+      const data = await res.json();
+      if (data.error) return;
+
+      const friendIds = data.friends.map(f => f._id.toString());
+
+      // 2. Ask server who is online
+      let onlineIds = new Set();
+
+      if (friendIds.length > 0) {
+        await new Promise(resolve => {
+          socket.emit(
+            'users:online-check',
+            { userIds: friendIds },
+            ({ online }) => {
+              online.forEach(id => onlineIds.add(id.toString()));
+              resolve();
+            }
+          );
+        });
+      }
+
+      // 3. Update ONLY the green/grey dots
+      data.friends.forEach(f => {
+        const id = f._id.toString();
+
+        // find existing dot in DOM
+        const dot = document.getElementById(`status-dot-${id}`);
+        if (!dot) return;
+
+        const isOnline = onlineIds.has(id);
+
+        // only toggle classes, nothing else
+        dot.classList.toggle("online", isOnline);
+        dot.classList.toggle("offline", !isOnline);
+        dot.title = isOnline ? "Online" : "Offline";
+      });
+
+    } catch (err) {
+      console.error("Friend status update failed:", err);
+    }
+  }
 
 async function loadFriendRequestCount() {
   if (!currentUser) return;

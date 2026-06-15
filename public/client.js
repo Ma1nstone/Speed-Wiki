@@ -203,8 +203,12 @@ function startFriendsPolling() {
   stopFriendsPolling();
   friendsInterval = setInterval(() => {
     const modal = document.getElementById("modal-friends");
-    if (modal && !modal.classList.contains("hidden")) loadFriends();
-  }, 1000);
+
+    // only run when friends modal is open
+    if (modal && !modal.classList.contains("hidden")) {
+      updateFriendStatusDots();
+    }
+  }, 3000);
 }
 
 function stopFriendsPolling() {

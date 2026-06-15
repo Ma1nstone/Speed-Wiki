@@ -943,10 +943,7 @@ socket.on("room:state", (room) => {
     room.players.forEach(p => {
       const li = document.createElement("li");
       li.className = "player-list-item";
-      const avatar = document.createElement("div");
-      avatar.className = "player-avatar";
-      avatar.style.background = avatarColor(p.name);
-      avatar.textContent = p.name.charAt(0).toUpperCase();
+      const avatar = createAvatarElement(p);
       const nameEl = document.createElement("span");
       nameEl.className = "player-name";
       nameEl.textContent = p.name;
@@ -978,7 +975,8 @@ function updateScoreboard(players) {
     const li = document.createElement("li");
     li.className = "score-item" + (p.finished ? " score-finished" : "") + (p.id === socket.id ? " score-you" : "");
     const rank = document.createElement("span"); rank.className = "score-rank"; rank.textContent = i + 1;
-    const av = document.createElement("div"); av.className = "score-avatar"; av.style.background = avatarColor(p.name); av.textContent = p.name.charAt(0).toUpperCase();
+    const av = createAvatarElement(p);
+    av.classList.add("score-avatar");
     const info = document.createElement("div"); info.className = "score-info";
     const nameEl = document.createElement("div"); nameEl.className = "score-name"; nameEl.textContent = p.name + (p.id === socket.id ? " (you)" : "");
     const artEl = document.createElement("div"); artEl.className = "score-article"; artEl.textContent = p.finished ? "✓ Finished!" : (p.currentArticle || "—");
@@ -1256,6 +1254,23 @@ socket.on("game:reset", () => {
   showScreen("lobby");
 });
 
+function createAvatarElement(user) {
+  const avatar = document.createElement("div");
+  avatar.className = "player-avatar";
+
+  if (user.avatarUrl) {
+    const img = document.createElement("img");
+    img.src = user.avatarUrl + "?t=" + Date.now();
+    img.style.cssText = "width:100%;height:100%;border-radius:50%;object-fit:cover";
+    avatar.appendChild(img);
+  } else {
+    avatar.style.background = avatarColor(user.name || user.username);
+    avatar.textContent = (user.name || user.username).charAt(0).toUpperCase();
+  }
+
+  return avatar;
+}
+
 // ─── Avatar colors ────────────────────────────────────────────────────────────
 const AVATAR_COLORS = ["#3366CC","#2E7D32","#6A1B9A","#C62828","#AD6800","#00695C","#1565C0","#4527A0","#558B2F","#BF360C"];
 function avatarColor(name) {
@@ -1263,3 +1278,26 @@ function avatarColor(name) {
   for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
   return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }
+
+const avatarInput = document.getElementById("profile-avatar-input");
+const avatarPreview = document.getElementById("profile-avatar-preview");
+const uploadBtn = document.getElementById("btn-profile-upload");
+
+// open file picker
+uploadBtn.addEventListener("click", () => {
+  avatarInput.click();
+});
+
+// show preview instantly
+avatarInput.addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+
+  reader.onload = function (event) {
+    avatarPreview.innerHTML = `<img src="${event.target.result}" />`;
+  };
+
+  reader.readAsDataURL(file);
+});

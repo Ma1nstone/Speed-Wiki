@@ -885,3 +885,25 @@ input { font-family: inherit; }
 .status-dot.offline {
   background: #ff0000;
 }
+
+.profile-avatar-preview {
+  width: 90px;
+  height: 90px;
+  border-radius: 50%;
+  background: #e5e7eb;
+  margin: 10px auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  font-size: 28px;
+  font-weight: 600;
+  color: #555;
+  border: 2px solid #3366CC;
+}
+
+.profile-avatar-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}

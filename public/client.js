@@ -151,7 +151,7 @@ async function loadFriends() {
     if (data.error) return;
 
     // Gather friend IDs and check online status via socket
-    const friendIds = data.friends.map(f => f._id);
+    const friendIds = data.friends.map(f => f._id.toString());
     let onlineIds = new Set();
     if (friendIds.length > 0) {
       await new Promise(resolve => {
@@ -185,14 +185,36 @@ async function loadFriends() {
       list.innerHTML = '<li style="font-size:.85rem;color:var(--ink-muted);padding:8px 0">No friends yet — add someone above!</li>';
     } else {
       data.friends.forEach(f => {
-        const isOnline = onlineIds.has(f._id.toString());
+        const fId = f._id.toString();
+        const isOnline = onlineIds.has(fId);
         const li = document.createElement("li");
         li.className = "player-list-item";
-        li.innerHTML = `
-          <span class="status-dot ${isOnline ? 'online' : 'offline'}" title="${isOnline ? 'Online' : 'Offline'}"></span>
-          <span class="player-name" style="flex:1">${f.username}</span>
-          <button class="btn btn-ghost" style="padding:4px 10px;font-size:.8rem" onclick="openMessagesAndChat('${f._id}','${f.username}')">Message</button>
-          <button class="btn btn-primary" style="padding:4px 10px;font-size:.8rem" onclick="inviteFriend('${f._id}','${f.username}')">Invite</button>`;
+
+        const dot = document.createElement("span");
+        dot.className = `status-dot ${isOnline ? 'online' : 'offline'}`;
+        dot.title = isOnline ? 'Online' : 'Offline';
+
+        const name = document.createElement("span");
+        name.className = "player-name";
+        name.style.flex = "1";
+        name.textContent = f.username;
+
+        const msgBtn = document.createElement("button");
+        msgBtn.className = "btn btn-ghost";
+        msgBtn.style.cssText = "padding:4px 10px;font-size:.8rem";
+        msgBtn.textContent = "Message";
+        msgBtn.onclick = () => openMessagesAndChat(fId, f.username);
+
+        const invBtn = document.createElement("button");
+        invBtn.className = "btn btn-primary";
+        invBtn.style.cssText = "padding:4px 10px;font-size:.8rem";
+        invBtn.textContent = "Invite";
+        invBtn.onclick = () => inviteFriend(fId, f.username);
+
+        li.appendChild(dot);
+        li.appendChild(name);
+        li.appendChild(msgBtn);
+        li.appendChild(invBtn);
         list.appendChild(li);
       });
     }

@@ -204,7 +204,7 @@ function startFriendsPolling() {
   friendsInterval = setInterval(() => {
     const modal = document.getElementById("modal-friends");
     if (modal && !modal.classList.contains("hidden")) loadFriends();
-  }, 5000);
+  }, 1000);
 }
 
 function stopFriendsPolling() {
@@ -222,7 +222,7 @@ function startMessagesPolling() {
       refreshActiveChat();
     }
     pollUnread();
-  }, 5000);
+  }, 1000);
 }
 
 function stopMessagesPolling() {

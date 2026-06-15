@@ -24,10 +24,11 @@ const WIKI_API_ZH = "https://zh.wikipedia.org/w/api.php";
 
 // ─── Online count ─────────────────────────────────────────────────────────────
 socket.on("server:online", ({ count }) => {
-  document.getElementById("home-online-count")?.textContent !== undefined && (document.getElementById("home-online-count").textContent = count);
-  document.getElementById("lobby-online-count")?.textContent !== undefined && (document.getElementById("lobby-online-count").textContent = count);
+  const homeEl = document.getElementById("home-online-count");
+  if (homeEl) homeEl.textContent = count;
+  const lobbyEl = document.getElementById("lobby-online-count");
+  if (lobbyEl) lobbyEl.textContent = count;
 });
-
 
 function loadSession() {
   try {
@@ -69,9 +70,7 @@ socket.on("toast", ({ msg, type }) => showToast(msg, type));
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 async function checkAuth() {
   try {
-    const res = await fetch('/api/me', {
-      credentials: 'include'
-    });
+    const res = await fetch('/api/me', { credentials: 'include' });
     const data = await res.json();
     if (data.loggedIn) {
       currentUser = { username: data.username, userId: data.userId };
@@ -112,14 +111,12 @@ async function submitAuth(isRegister) {
     const res = await fetch(endpoint, {
       method: 'POST',
       credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
     });
     const data = await res.json();
     if (data.error) { errorEl.textContent = data.error; errorEl.classList.remove("hidden"); return; }
-    currentUser = { username: data.username };
+    currentUser = { username: data.username, userId: data.userId };
     playerName = data.username;
     document.getElementById("modal-auth").classList.add("hidden");
     showLoggedIn();
@@ -135,6 +132,18 @@ async function loadFriends() {
     const res = await fetch('/api/friends');
     const data = await res.json();
     if (data.error) return;
+
+    // Gather friend IDs and check online status via socket
+    const friendIds = data.friends.map(f => f._id);
+    let onlineIds = new Set();
+    if (friendIds.length > 0) {
+      await new Promise(resolve => {
+        socket.emit('users:online-check', { userIds: friendIds }, ({ online }) => {
+          online.forEach(id => onlineIds.add(id.toString()));
+          resolve();
+        });
+      });
+    }
 
     const reqSection = document.getElementById("friends-requests-section");
     const reqList = document.getElementById("friends-requests-list");
@@ -159,15 +168,39 @@ async function loadFriends() {
       list.innerHTML = '<li style="font-size:.85rem;color:var(--ink-muted);padding:8px 0">No friends yet — add someone above!</li>';
     } else {
       data.friends.forEach(f => {
+        const isOnline = onlineIds.has(f._id.toString());
         const li = document.createElement("li");
         li.className = "player-list-item";
-        li.innerHTML = `<span class="player-name">${f.username}</span>
-          <button class="btn btn-ghost" style="padding:4px 10px;font-size:.8rem" onclick="openChatWith('${f._id}','${f.username}')">Message</button>
+        li.innerHTML = `
+          <span class="status-dot ${isOnline ? 'online' : 'offline'}" title="${isOnline ? 'Online' : 'Offline'}"></span>
+          <span class="player-name" style="flex:1">${f.username}</span>
+          <button class="btn btn-ghost" style="padding:4px 10px;font-size:.8rem" onclick="openMessagesAndChat('${f._id}','${f.username}')">Message</button>
           <button class="btn btn-primary" style="padding:4px 10px;font-size:.8rem" onclick="inviteFriend('${f._id}','${f.username}')">Invite</button>`;
-        li.querySelector('.player-name').style.flex = "1";
         list.appendChild(li);
       });
     }
+  } catch (e) { }
+}
+
+// Opens the messages modal directly to a chat with the given user
+async function openMessagesAndChat(userId, username) {
+  // Close friends modal first
+  document.getElementById("modal-friends").classList.add("hidden");
+  // Open messages modal and go straight to chat
+  document.getElementById("modal-messages").classList.remove("hidden");
+  document.getElementById("btn-messages-back").classList.remove("hidden");
+  document.getElementById("messages-list-view").classList.add("hidden");
+  document.getElementById("messages-chat-view").classList.remove("hidden");
+  document.getElementById("messages-title").textContent = username;
+  activeChatId = userId;
+  try {
+    const res = await fetch(`/api/messages/${userId}`);
+    const data = await res.json();
+    const chat = document.getElementById("chat-messages");
+    chat.innerHTML = "";
+    data.messages.forEach(m => appendChatMessage(m));
+    chat.scrollTop = chat.scrollHeight;
+    pollUnread();
   } catch (e) { }
 }
 
@@ -196,39 +229,30 @@ function inviteFriend(friendId, friendUsername) {
   const ensureLobbyThenInvite = () => {
     socket.emit(
       "invite:send",
-      {
-        toId: friendId,
-        toUsername: friendUsername,
-        roomCode
-      },
+      { toId: friendId, toUsername: friendUsername, roomCode },
       (res) => {
         if (res?.success) {
           showToast(`Invite sent to ${friendUsername}!`, "success");
         } else {
-          showToast(`${friendUsername} is offline`, "error");
+          // They're offline — show specific message AFTER the "sent" toast
+          setTimeout(() => showToast(`${friendUsername} is offline`, "warning"), 400);
         }
       }
     );
-
-    showToast(`Invite sent to ${friendUsername}!`, "success");
   };
 
-  // If lobby already exists → send invite immediately
   if (roomCode) {
     ensureLobbyThenInvite();
     return;
   }
 
-  // Otherwise create lobby first, then wait for response
   showToast("Creating lobby...", "info");
 
   socket.once("lobby:created", ({ code }) => {
     roomCode = code;
     isHost = true;
-
     document.getElementById("lobby-code-value").textContent = roomCode;
     showScreen("lobby");
-
     ensureLobbyThenInvite();
   });
 
@@ -244,7 +268,6 @@ async function openMessages() {
   document.getElementById("btn-messages-back").classList.add("hidden");
   activeChatId = null;
 
-  // Load conversations from friends list
   try {
     const res = await fetch('/api/friends');
     const data = await res.json();
@@ -328,20 +351,22 @@ async function openStats() {
     const s = data.stats;
     const winRate = s.gamesPlayed > 0 ? Math.round((s.gamesWon / s.gamesPlayed) * 100) : 0;
     document.getElementById("stats-content").innerHTML = `
-      <div class="stats-content">
-        <div class="stat-card"><div class="stat-val">${s.gamesPlayed}</div><div class="stat-label">Games Played</div></div>
-        <div class="stat-card"><div class="stat-val">${s.gamesWon}</div><div class="stat-label">Wins</div></div>
-        <div class="stat-card"><div class="stat-val">${winRate}%</div><div class="stat-label">Win Rate</div></div>
-      </div>
-      <div class="stats-history">
-        <div class="section-heading">Recent Games</div>
-        ${data.history.length === 0 ? '<p style="font-size:.85rem;color:var(--ink-muted)">No games yet.</p>' :
-        data.history.map(g => `
-            <div class="stats-history-item">
-              <span>${g.won ? '🏆' : '❌'}</span>
-              <span style="flex:1">${g.startArticle} → ${g.targetArticle}</span>
-              <span>${g.clicks} clicks</span>
-            </div>`).join('')}
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-val">${s.gamesPlayed}</div>
+          <div class="stat-label">Games Played</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val">${s.gamesWon}</div>
+          <div class="stat-label">Wins</div>
+        </div>
+        <div class="stat-card stat-card-wide">
+          <div class="stat-val stat-val-rate">${winRate}%</div>
+          <div class="stat-label">Win Rate</div>
+          <div class="stat-bar-wrap">
+            <div class="stat-bar-fill" style="width:${winRate}%"></div>
+          </div>
+        </div>
       </div>`;
   } catch (e) { }
 }
@@ -352,8 +377,8 @@ async function loadChallengePreview() {
     const res = await fetch('/api/challenges');
     const challenges = await res.json();
     const c = challenges[Math.floor(Math.random() * challenges.length)];
-    document.getElementById("preview-start")?.textContent && (document.getElementById("preview-start").textContent = c.start);
-    document.getElementById("preview-target-name") && (document.getElementById("preview-target-name").textContent = c.target);
+    if (document.getElementById("preview-start")) document.getElementById("preview-start").textContent = c.start;
+    if (document.getElementById("preview-target-name")) document.getElementById("preview-target-name").textContent = c.target;
   } catch (e) { }
 }
 
@@ -398,8 +423,6 @@ window.addEventListener("DOMContentLoaded", () => {
   checkAuth();
   loadChallengePreview();
   fetchLatestCommit();
-  //if (currentUser) { createLobby(); }
-  //else { document.getElementById("modal-guest").classList.remove("hidden"); document.getElementById("input-guest-name").value = ""; }
 
   // Auth modal
   document.getElementById("btn-open-auth").onclick = () => {
@@ -410,7 +433,6 @@ window.addEventListener("DOMContentLoaded", () => {
     document.getElementById("auth-password2").value = "";
   };
   document.getElementById("btn-auth-cancel").onclick = () => document.getElementById("modal-auth").classList.add("hidden");
-  document.getElementById("btn-auth-submit").onclick = () => submitAuth(document.getElementById("tab-register").classList.contains("active") === false ? false : true);
 
   let isRegisterMode = false;
   document.getElementById("tab-login").onclick = () => {
@@ -431,10 +453,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // Logout
   document.getElementById("btn-logout").onclick = async () => {
-    await fetch('/api/logout', {
-      method: 'POST',
-      credentials: 'include'
-    });
+    await fetch('/api/logout', { method: 'POST', credentials: 'include' });
     currentUser = null; playerName = "";
     showLoggedOut();
     showToast("Logged out", "info");
@@ -446,89 +465,82 @@ window.addEventListener("DOMContentLoaded", () => {
     document.getElementById("input-guest-name").value = "";
   };
 
-document.getElementById("btn-create-lobby").onclick = () => {
+  document.getElementById("btn-create-lobby").onclick = () => { createLobby(); };
+
+  document.getElementById("btn-guest-cancel").onclick = () => document.getElementById("modal-guest").classList.add("hidden");
+  document.getElementById("btn-guest-confirm").onclick = () => {
+    const name = document.getElementById("input-guest-name").value.trim();
+    if (!name) { showToast("Enter a name", "error"); return; }
+    playerName = name;
+    document.getElementById("modal-guest").classList.add("hidden");
     createLobby();
   };
-  
 
-document.getElementById("btn-guest-cancel").onclick = () => document.getElementById("modal-guest").classList.add("hidden");
-document.getElementById("btn-guest-confirm").onclick = () => {
-  const name = document.getElementById("input-guest-name").value.trim();
-  if (!name) { showToast("Enter a name", "error"); return; }
-  playerName = name;
-  document.getElementById("modal-guest").classList.add("hidden");
-  createLobby();
-};
+  // Join lobby
+  document.getElementById("btn-join-open").onclick = () => {
+    if (!currentUser && !playerName) { document.getElementById("modal-guest").classList.remove("hidden"); return; }
+    document.getElementById("modal-join").classList.remove("hidden");
+    document.getElementById("input-room-code").value = "";
+  };
+  document.getElementById("btn-join-cancel").onclick = () => document.getElementById("modal-join").classList.add("hidden");
+  document.getElementById("btn-join-confirm").onclick = () => {
+    const code = document.getElementById("input-room-code").value.trim().toUpperCase();
+    if (!code) { showToast("Enter a room code", "error"); return; }
+    document.getElementById("modal-join").classList.add("hidden");
+    joinLobby(code);
+  };
+  document.getElementById("input-room-code").addEventListener("input", e => { e.target.value = e.target.value.toUpperCase(); });
+  document.getElementById("input-room-code").addEventListener("keydown", e => { if (e.key === "Enter") document.getElementById("btn-join-confirm").click(); });
 
-// Join lobby
-document.getElementById("btn-join-open").onclick = () => {
-  if (!currentUser && !playerName) { document.getElementById("modal-guest").classList.remove("hidden"); return; }
-  document.getElementById("modal-join").classList.remove("hidden");
-  document.getElementById("input-room-code").value = "";
-};
-document.getElementById("btn-join-cancel").onclick = () => document.getElementById("modal-join").classList.add("hidden");
-document.getElementById("btn-join-confirm").onclick = () => {
-  const code = document.getElementById("input-room-code").value.trim().toUpperCase();
-  if (!code) { showToast("Enter a room code", "error"); return; }
-  document.getElementById("modal-join").classList.add("hidden");
-  joinLobby(code);
-};
-document.getElementById("input-room-code").addEventListener("input", e => { e.target.value = e.target.value.toUpperCase(); });
-document.getElementById("input-room-code").addEventListener("keydown", e => { if (e.key === "Enter") document.getElementById("btn-join-confirm").click(); });
+  // How to play
+  document.getElementById("btn-how-to-play").onclick = () => document.getElementById("modal-how").classList.remove("hidden");
+  document.getElementById("btn-how-close").onclick = () => document.getElementById("modal-how").classList.add("hidden");
 
-// How to play
-document.getElementById("btn-how-to-play").onclick = () => document.getElementById("modal-how").classList.remove("hidden");
-document.getElementById("btn-how-close").onclick = () => document.getElementById("modal-how").classList.add("hidden");
+  // Friends
+  document.getElementById("btn-open-friends").onclick = () => { document.getElementById("modal-friends").classList.remove("hidden"); loadFriends(); };
+  document.getElementById("btn-open-friends-lobby").onclick = () => { document.getElementById("modal-friends").classList.remove("hidden"); loadFriends(); };
+  document.getElementById("btn-friends-close").onclick = () => document.getElementById("modal-friends").classList.add("hidden");
+  document.getElementById("btn-friends-add").onclick = async () => {
+    const username = document.getElementById("friends-add-input").value.trim();
+    if (!username) return;
+    const res = await fetch('/api/friends/request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username }) });
+    const data = await res.json();
+    if (data.error) showToast(data.error, "error");
+    else { showToast(`Friend request sent to ${username}!`, "success"); document.getElementById("friends-add-input").value = ""; }
+  };
 
-// Friends
-document.getElementById("btn-open-friends").onclick = () => { document.getElementById("modal-friends").classList.remove("hidden"); loadFriends(); };
-document.getElementById("btn-open-friends-lobby").onclick = () => {
-  document.getElementById("modal-friends").classList.remove("hidden");
-  loadFriends();
-};
-document.getElementById("btn-friends-close").onclick = () => document.getElementById("modal-friends").classList.add("hidden");
-document.getElementById("btn-friends-add").onclick = async () => {
-  const username = document.getElementById("friends-add-input").value.trim();
-  if (!username) return;
-  const res = await fetch('/api/friends/request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username }) });
-  const data = await res.json();
-  if (data.error) showToast(data.error, "error");
-  else { showToast(`Friend request sent to ${username}!`, "success"); document.getElementById("friends-add-input").value = ""; }
-};
+  // Messages
+  document.getElementById("btn-open-messages").onclick = () => openMessages();
+  document.getElementById("btn-messages-close").onclick = () => { document.getElementById("modal-messages").classList.add("hidden"); activeChatId = null; };
+  document.getElementById("btn-messages-back").onclick = () => { activeChatId = null; openMessages(); };
+  document.getElementById("btn-chat-send").onclick = () => sendMessage();
+  document.getElementById("chat-input").addEventListener("keydown", e => { if (e.key === "Enter") sendMessage(); });
 
-// Messages
-document.getElementById("btn-open-messages").onclick = () => openMessages();
-document.getElementById("btn-messages-close").onclick = () => { document.getElementById("modal-messages").classList.add("hidden"); activeChatId = null; };
-document.getElementById("btn-messages-back").onclick = () => { activeChatId = null; openMessages(); };
-document.getElementById("btn-chat-send").onclick = () => sendMessage();
-document.getElementById("chat-input").addEventListener("keydown", e => { if (e.key === "Enter") sendMessage(); });
+  // Stats
+  document.getElementById("btn-open-stats").onclick = () => openStats();
+  document.getElementById("btn-stats-close").onclick = () => document.getElementById("modal-stats").classList.add("hidden");
 
-// Stats
-document.getElementById("btn-open-stats").onclick = () => openStats();
-document.getElementById("btn-stats-close").onclick = () => document.getElementById("modal-stats").classList.add("hidden");
+  // Lobby buttons
+  document.getElementById("btn-copy-code").onclick = () => {
+    const code = document.getElementById("lobby-code-value").textContent;
+    navigator.clipboard.writeText(code).then(() => showToast("Room code copied!", "success"));
+  };
+  document.getElementById("btn-start-game").onclick = () => socket.emit("game:start");
+  document.getElementById("btn-leave-lobby").onclick = () => { socket.emit("lobby:leave"); showScreen("home"); roomCode = null; isHost = false; };
 
-// Lobby buttons
-document.getElementById("btn-copy-code").onclick = () => {
-  const code = document.getElementById("lobby-code-value").textContent;
-  navigator.clipboard.writeText(code).then(() => showToast("Room code copied!", "success"));
-};
-document.getElementById("btn-start-game").onclick = () => socket.emit("game:start");
-document.getElementById("btn-leave-lobby").onclick = () => { socket.emit("lobby:leave"); showScreen("home"); roomCode = null; isHost = false; };
+  // Back button
+  document.getElementById("btn-back")?.addEventListener("click", goBack);
 
-// Back button
-document.getElementById("btn-back")
-  ?.addEventListener("click", goBack);
+  // Play again / leave gameover
+  document.getElementById("btn-play-again").onclick = () => socket.emit("game:playAgain");
+  document.getElementById("btn-gameover-leave").onclick = () => { disableGameGuard(); socket.emit("lobby:leave"); document.getElementById("overlay-gameover").classList.add("hidden"); showScreen("home"); roomCode = null; isHost = false; };
+  document.getElementById("btn-leave-game").onclick = () => { disableGameGuard(); socket.emit("lobby:leave"); roomCode = null; isHost = false; showScreen("home"); };
 
-// Play again / leave gameover
-document.getElementById("btn-play-again").onclick = () => socket.emit("game:playAgain");
-document.getElementById("btn-gameover-leave").onclick = () => { disableGameGuard(); socket.emit("lobby:leave"); document.getElementById("overlay-gameover").classList.add("hidden"); showScreen("home"); roomCode = null; isHost = false; };
-document.getElementById("btn-leave-game").onclick = () => { disableGameGuard(); socket.emit("lobby:leave"); roomCode = null; isHost = false; showScreen("home"); };
+  // Wiki content click
+  document.getElementById("wiki-content")?.addEventListener("click", handleWikiClick);
 
-// Wiki content click
-document.getElementById("wiki-content")?.addEventListener("click", handleWikiClick);
-
-// Poll unread every 30s
-setInterval(() => { if (currentUser) pollUnread(); }, 30000);
+  // Poll unread every 30s
+  setInterval(() => { if (currentUser) pollUnread(); }, 30000);
 });
 
 // ─── Lobby ────────────────────────────────────────────────────────────────────
@@ -542,7 +554,6 @@ socket.on("error", ({ msg }) => showToast(msg, "error"));
 // ─── Invites ──────────────────────────────────────────────────────────────────
 socket.on("invite:receive", ({ fromUsername, roomCode: inviteCode }) => {
   showToast(`${fromUsername} invited you to a game!`, "info");
-  // Show a join button in toast — simplest approach
   const container = document.getElementById("toast-container");
   const btn = document.createElement("button");
   btn.className = "btn btn-primary";

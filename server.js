@@ -2,7 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
-const userSockets = new Map();
+const userSockets = new Map(); // userId -> socketId
 
 const mongoose = require('mongoose');
 const session = require('express-session');
@@ -110,6 +110,18 @@ app.get('/api/me', (req, res) => {
     username: req.session.username,
     userId: req.session.userId
   });
+});
+
+// ─── Online status route ──────────────────────────────────────────────────────
+app.post('/api/online-status', requireAuth, async (req, res) => {
+  try {
+    const { userIds } = req.body;
+    if (!Array.isArray(userIds)) return res.json({ online: [] });
+    const online = userIds.filter(id => userSockets.has(id.toString()));
+    res.json({ online });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // ─── Friends routes ───────────────────────────────────────────────────────────
@@ -391,6 +403,10 @@ function handleLeave(socket) {
 
 // ─── Socket Events ────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
+  // FIX: increment online count on connect
+  onlineCount++;
+  broadcastOnlineCount();
+
   const userId = socket.request.session?.userId;
   const username = socket.request.session?.username;
 
@@ -401,24 +417,29 @@ io.on('connection', (socket) => {
   socket.on('invite:send', ({ toId, roomCode }, callback) => {
     const targetSocketId = userSockets.get(toId?.toString());
 
-    // NOT ONLINE
     if (!targetSocketId) {
+      // User is offline — tell the sender specifically
       if (typeof callback === "function") {
         return callback({ success: false, reason: "offline" });
       }
       return socket.emit('error', { msg: 'User is offline' });
     }
 
-    // SEND INVITE
     io.to(targetSocketId).emit('invite:receive', {
       fromUsername: username,
       roomCode
     });
 
-    // CONFIRM BACK TO SENDER
     if (typeof callback === "function") {
       callback({ success: true });
     }
+  });
+
+  // Let client check online status of specific user IDs
+  socket.on('users:online-check', ({ userIds }, callback) => {
+    if (!Array.isArray(userIds)) return callback && callback({ online: [] });
+    const online = userIds.filter(id => userSockets.has(id.toString()));
+    if (typeof callback === "function") callback({ online });
   });
 
   socket.on('lobby:create', ({ playerName }) => {

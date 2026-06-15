@@ -835,3 +835,52 @@ input { font-family: inherit; }
   background: #e74c3c;
   box-shadow: 0 0 6px #e74c3c66;
 }
+
+/* ── Stats grid — 3 cards, no recent games ── */
+.stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 8px 0 4px;
+}
+.stat-card-wide {
+  grid-column: 1 / -1;
+}
+.stat-val-rate {
+  color: var(--blue) !important;
+  font-size: 2rem !important;
+}
+.stat-bar-wrap {
+  margin-top: 10px;
+  height: 8px;
+  background: var(--border);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+.stat-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--blue), #5588ee);
+  border-radius: var(--radius-pill);
+  transition: width 0.6s cubic-bezier(0.4,0,0.2,1);
+  min-width: 0;
+}
+/* Override old stats-content grid since we now use stats-grid inside */
+#stats-content .stats-content {
+  display: contents;
+}
+
+/* ── Status dots on friends list ── */
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+}
+.status-dot.online {
+  background: #2ecc71;
+  box-shadow: 0 0 0 2px rgba(46,204,113,0.2);
+}
+.status-dot.offline {
+  background: #c8ccd1;
+}

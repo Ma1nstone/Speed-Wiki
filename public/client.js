@@ -15,8 +15,13 @@ let elapsedMs = 0;
 let timerInterval = null;
 let lastTickTime = null;
 let inGame = false;
-let currentUser = null; // { username, userId } or null if guest
-let activeChatId = null; // userId of open conversation
+let currentUser = null; // { username, userId, isDev, avatarUrl } or null
+let activeChatId = null;
+
+// Polling intervals
+let friendsInterval = null;
+let messagesInterval = null;
+let homeNotifInterval = null;
 
 const BLOCKED_PREFIXES = ["Wikipedia:", "Help:", "Template:", "Category:", "File:", "Special:", "Talk:", "User:", "Portal:", "Draft:", "Module:", "MediaWiki:"];
 const WIKI_API = "https://en.wikipedia.org/w/api.php";
@@ -24,24 +29,42 @@ const WIKI_API_ZH = "https://zh.wikipedia.org/w/api.php";
 
 // ─── Online count ─────────────────────────────────────────────────────────────
 socket.on("server:online", ({ count }) => {
-  const homeEl = document.getElementById("home-online-count");
-  if (homeEl) homeEl.textContent = count;
-  const lobbyEl = document.getElementById("lobby-online-count");
-  if (lobbyEl) lobbyEl.textContent = count;
+  document.getElementById("home-online-count")?.textContent !== undefined && (document.getElementById("home-online-count").textContent = count);
+  document.getElementById("lobby-online-count")?.textContent !== undefined && (document.getElementById("lobby-online-count").textContent = count);
 });
 
-function loadSession() {
-  try {
-    const data = JSON.parse(localStorage.getItem("wikiSession"));
-    if (!data) return null;
-    return data;
-  } catch {
-    return null;
-  }
-}
+// ─── Banned account handling ─────────────────────────────────────────────────
+socket.on("account:banned", () => {
+  showBannedScreen();
+});
 
-function clearSession() {
-  localStorage.removeItem("wikiSession");
+function showBannedScreen() {
+  // Hide all screens and show banned state
+  document.querySelectorAll(".screen").forEach(s => { s.classList.add("hidden"); s.classList.remove("active"); });
+  const home = document.getElementById("screen-home");
+  home.classList.remove("hidden"); home.classList.add("active");
+
+  // Hide everything in home except brand and show banned message
+  document.getElementById("home-logged-out").classList.add("hidden");
+  document.getElementById("home-logged-in").classList.add("hidden");
+  document.getElementById("home-preview")?.classList.add("hidden");
+  document.getElementById("btn-how-to-play")?.classList.add("hidden");
+  document.getElementById("home-online-badge")?.classList.add("hidden");
+
+  const actions = document.getElementById("home-actions");
+  if (actions) {
+    actions.innerHTML = `
+      <div style="text-align:center;padding:32px 0">
+        <div style="font-size:2.5rem;margin-bottom:12px">🚫</div>
+        <div style="font-size:1.2rem;font-weight:700;color:var(--red);margin-bottom:8px">Account Banned</div>
+        <div style="font-size:.88rem;color:var(--ink-muted);margin-bottom:24px">Your account has been banned from SpeedWiki.</div>
+        <button id="btn-banned-logout" class="btn btn-ghost" style="width:100%">Sign Out</button>
+      </div>`;
+    document.getElementById("btn-banned-logout").onclick = async () => {
+      await fetch('/api/logout', { method: 'POST', credentials: 'include' });
+      location.reload();
+    };
+  }
 }
 
 // ─── Screen switching ─────────────────────────────────────────────────────────
@@ -52,7 +75,7 @@ function showScreen(name) {
   screen.classList.remove("hidden");
   screen.classList.add("active");
   const badge = document.getElementById("commit-badge");
-  if (badge) { if (name === "home") badge.classList.remove("hidden"); else badge.classList.add("hidden"); }
+  if (badge) { name === "home" ? badge.classList.remove("hidden") : badge.classList.add("hidden"); }
 }
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
@@ -73,11 +96,11 @@ async function checkAuth() {
     const res = await fetch('/api/me', { credentials: 'include' });
     const data = await res.json();
     if (data.loggedIn) {
-      currentUser = { username: data.username, userId: data.userId };
+      if (data.banned) { showBannedScreen(); return; }
+      currentUser = { username: data.username, userId: data.userId, isDev: data.isDev, avatarUrl: data.avatarUrl };
       playerName = data.username;
       showLoggedIn();
-      pollUnread();
-      loadFriendRequestCount();
+      startHomePolling();
     } else {
       showLoggedOut();
     }
@@ -88,12 +111,48 @@ function showLoggedIn() {
   document.getElementById("home-logged-out").classList.add("hidden");
   document.getElementById("home-logged-in").classList.remove("hidden");
   document.getElementById("user-bar-name").textContent = currentUser.username;
+
+  // Update avatar in user bar
+  updateUserBarAvatar();
+
+  // Show dev panel if applicable
+  const devPanel = document.getElementById("dev-panel");
+  if (devPanel) devPanel.classList.toggle("hidden", !currentUser.isDev);
+}
+
+function updateUserBarAvatar() {
+  const bar = document.getElementById("user-bar");
+  if (!bar) return;
+  let img = document.getElementById("user-bar-avatar");
+  if (currentUser.avatarUrl) {
+    if (!img) {
+      img = document.createElement("img");
+      img.id = "user-bar-avatar";
+      img.style.cssText = "width:28px;height:28px;border-radius:50%;object-fit:cover;cursor:pointer;border:2px solid var(--border)";
+      img.onclick = () => document.getElementById("modal-profile").classList.remove("hidden");
+      bar.insertBefore(img, bar.firstChild);
+    }
+    img.src = currentUser.avatarUrl + '?t=' + Date.now();
+  } else {
+    if (img) img.remove();
+    // Show a default avatar button
+    let defAvatar = document.getElementById("user-bar-default-avatar");
+    if (!defAvatar) {
+      defAvatar = document.createElement("div");
+      defAvatar.id = "user-bar-default-avatar";
+      defAvatar.style.cssText = "width:28px;height:28px;border-radius:50%;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;cursor:pointer;flex-shrink:0";
+      defAvatar.onclick = () => document.getElementById("modal-profile").classList.remove("hidden");
+      bar.insertBefore(defAvatar, bar.firstChild);
+    }
+    defAvatar.textContent = currentUser.username.charAt(0).toUpperCase();
+  }
 }
 
 function showLoggedOut() {
   document.getElementById("home-logged-out").classList.remove("hidden");
   document.getElementById("home-logged-in").classList.add("hidden");
   currentUser = null;
+  stopHomePolling();
 }
 
 async function submitAuth(isRegister) {
@@ -109,38 +168,82 @@ async function submitAuth(isRegister) {
   const endpoint = isRegister ? '/api/register' : '/api/login';
   try {
     const res = await fetch(endpoint, {
-      method: 'POST',
-      credentials: 'include',
+      method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
     });
     const data = await res.json();
     if (data.error) { errorEl.textContent = data.error; errorEl.classList.remove("hidden"); return; }
-    currentUser = { username: data.username, userId: data.userId };
+    if (data.banned) { document.getElementById("modal-auth").classList.add("hidden"); showBannedScreen(); return; }
+    currentUser = { username: data.username, userId: data.userId, isDev: data.isDev, avatarUrl: data.avatarUrl };
     playerName = data.username;
     document.getElementById("modal-auth").classList.add("hidden");
     showLoggedIn();
-    pollUnread();
-    loadFriendRequestCount();
+    startHomePolling();
     showToast(`Welcome, ${data.username}!`, "success");
   } catch (e) { errorEl.textContent = "Server error"; errorEl.classList.remove("hidden"); }
 }
 
-// ─── Friends modal auto-refresh ───────────────────────────────────────────────
-let friendsRefreshInterval = null;
+// ─── Home polling (friend requests + unread messages) ─────────────────────────
+function startHomePolling() {
+  stopHomePolling();
+  pollUnread();
+  loadFriendRequestCount();
+  homeNotifInterval = setInterval(() => {
+    if (currentUser) { pollUnread(); loadFriendRequestCount(); }
+  }, 10000);
+}
 
-function startFriendsRefresh() {
-  stopFriendsRefresh();
-  friendsRefreshInterval = setInterval(() => {
+function stopHomePolling() {
+  if (homeNotifInterval) { clearInterval(homeNotifInterval); homeNotifInterval = null; }
+}
+
+// ─── Friends modal polling ────────────────────────────────────────────────────
+function startFriendsPolling() {
+  stopFriendsPolling();
+  friendsInterval = setInterval(() => {
     const modal = document.getElementById("modal-friends");
-    if (modal && !modal.classList.contains("hidden")) {
-      loadFriends();
-    }
+    if (modal && !modal.classList.contains("hidden")) loadFriends();
   }, 5000);
 }
 
-function stopFriendsRefresh() {
-  if (friendsRefreshInterval) { clearInterval(friendsRefreshInterval); friendsRefreshInterval = null; }
+function stopFriendsPolling() {
+  if (friendsInterval) { clearInterval(friendsInterval); friendsInterval = null; }
+}
+
+// ─── Messages polling ─────────────────────────────────────────────────────────
+function startMessagesPolling() {
+  stopMessagesPolling();
+  messagesInterval = setInterval(() => {
+    const modal = document.getElementById("modal-messages");
+    if (!modal || modal.classList.contains("hidden")) return;
+    if (activeChatId) {
+      // Refresh current chat silently
+      refreshActiveChat();
+    }
+    pollUnread();
+  }, 5000);
+}
+
+function stopMessagesPolling() {
+  if (messagesInterval) { clearInterval(messagesInterval); messagesInterval = null; }
+}
+
+async function refreshActiveChat() {
+  if (!activeChatId) return;
+  try {
+    const res = await fetch(`/api/messages/${activeChatId}`);
+    const data = await res.json();
+    const chat = document.getElementById("chat-messages");
+    if (!chat) return;
+    const wasAtBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 50;
+    const prevCount = chat.children.length;
+    if (data.messages.length !== prevCount) {
+      chat.innerHTML = "";
+      data.messages.forEach(m => appendChatMessage(m));
+      if (wasAtBottom) chat.scrollTop = chat.scrollHeight;
+    }
+  } catch (e) {}
 }
 
 // ─── Friends ──────────────────────────────────────────────────────────────────
@@ -150,7 +253,6 @@ async function loadFriends() {
     const data = await res.json();
     if (data.error) return;
 
-    // Gather friend IDs and check online status via socket
     const friendIds = data.friends.map(f => f._id.toString());
     let onlineIds = new Set();
     if (friendIds.length > 0) {
@@ -211,21 +313,39 @@ async function loadFriends() {
         invBtn.textContent = "Invite";
         invBtn.onclick = () => inviteFriend(fId, f.username);
 
-        li.appendChild(dot);
-        li.appendChild(name);
-        li.appendChild(msgBtn);
-        li.appendChild(invBtn);
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "btn btn-ghost";
+        removeBtn.style.cssText = "padding:4px 10px;font-size:.8rem;color:var(--red);border-color:#f9c5c5";
+        removeBtn.textContent = "Remove";
+        removeBtn.onclick = () => removeFriend(fId, f.username);
+
+        li.appendChild(dot); li.appendChild(name);
+        li.appendChild(msgBtn); li.appendChild(invBtn); li.appendChild(removeBtn);
         list.appendChild(li);
       });
     }
-  } catch (e) { }
+    // Also update the badge count
+    loadFriendRequestCount();
+  } catch (e) {}
 }
 
-// Opens the messages modal directly to a chat with the given user
+async function removeFriend(friendId, friendUsername) {
+  if (!confirm(`Remove ${friendUsername} as a friend? This will also delete your message history.`)) return;
+  try {
+    const res = await fetch('/api/friends/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ friendId })
+    });
+    const data = await res.json();
+    if (data.error) { showToast(data.error, "error"); return; }
+    showToast(`Removed ${friendUsername}`, "info");
+    loadFriends();
+  } catch (e) { showToast("Failed to remove friend", "error"); }
+}
+
 async function openMessagesAndChat(userId, username) {
-  // Close friends modal first
   document.getElementById("modal-friends").classList.add("hidden");
-  // Open messages modal and go straight to chat
   document.getElementById("modal-messages").classList.remove("hidden");
   document.getElementById("btn-messages-back").classList.remove("hidden");
   document.getElementById("messages-list-view").classList.add("hidden");
@@ -240,18 +360,23 @@ async function openMessagesAndChat(userId, username) {
     data.messages.forEach(m => appendChatMessage(m));
     chat.scrollTop = chat.scrollHeight;
     pollUnread();
-  } catch (e) { }
+  } catch (e) {}
+  startMessagesPolling();
 }
 
 async function loadFriendRequestCount() {
+  if (!currentUser) return;
   try {
     const res = await fetch('/api/friends');
     const data = await res.json();
     if (data.error) return;
-    const badge = document.getElementById("friend-requests-badge");
-    if (data.requests.length > 0) { badge.textContent = data.requests.length; badge.classList.remove("hidden"); }
-    else badge.classList.add("hidden");
-  } catch (e) { }
+    const count = data.requests.length;
+    // Update all friend request badges
+    document.querySelectorAll('[id="friend-requests-badge"]').forEach(badge => {
+      if (count > 0) { badge.textContent = count; badge.classList.remove("hidden"); }
+      else badge.classList.add("hidden");
+    });
+  } catch (e) {}
 }
 
 async function acceptFriend(fromId) {
@@ -265,36 +390,23 @@ async function declineFriend(fromId) {
 }
 
 function inviteFriend(friendId, friendUsername) {
-  const ensureLobbyThenInvite = () => {
-    socket.emit(
-      "invite:send",
-      { toId: friendId, toUsername: friendUsername, roomCode },
-      (res) => {
-        if (res?.success) {
-          showToast(`Invite sent to ${friendUsername}!`, "success");
-        } else {
-          // They're offline — show specific message AFTER the "sent" toast
-          setTimeout(() => showToast(`${friendUsername} is offline`, "warning"), 400);
-        }
-      }
-    );
+  const sendInvite = () => {
+    socket.emit("invite:send", { toId: friendId, toUsername: friendUsername, roomCode }, (res) => {
+      if (res?.success) showToast(`Invite sent to ${friendUsername}!`, "success");
+      else showToast(`${friendUsername} is offline`, "warning");
+    });
   };
 
-  if (roomCode) {
-    ensureLobbyThenInvite();
-    return;
-  }
+  if (roomCode) { sendInvite(); return; }
 
   showToast("Creating lobby...", "info");
-
   socket.once("lobby:created", ({ code }) => {
     roomCode = code;
     isHost = true;
     document.getElementById("lobby-code-value").textContent = roomCode;
     showScreen("lobby");
-    ensureLobbyThenInvite();
+    sendInvite();
   });
-
   createLobby();
 }
 
@@ -324,7 +436,9 @@ async function openMessages() {
       li.onclick = () => openChatWith(f._id, f.username);
       list.appendChild(li);
     });
-  } catch (e) { }
+  } catch (e) {}
+
+  startMessagesPolling();
 }
 
 async function openChatWith(userId, username) {
@@ -342,14 +456,18 @@ async function openChatWith(userId, username) {
     data.messages.forEach(m => appendChatMessage(m));
     chat.scrollTop = chat.scrollHeight;
     pollUnread();
-  } catch (e) { }
+  } catch (e) {}
 }
 
 function appendChatMessage(m) {
   const chat = document.getElementById("chat-messages");
   if (!chat) return;
   const div = document.createElement("div");
-  const mine = currentUser && (m.from === currentUser.userId || m.from?._id === currentUser.userId || m.from?.toString() === currentUser.userId?.toString());
+  const mine = currentUser && (
+    m.from === currentUser.userId ||
+    m.from?._id === currentUser.userId ||
+    m.from?.toString() === currentUser.userId?.toString()
+  );
   div.className = `chat-msg ${mine ? "mine" : "theirs"}`;
   div.textContent = m.content;
   chat.appendChild(div);
@@ -362,22 +480,27 @@ async function sendMessage() {
   if (!content) return;
   input.value = "";
   try {
-    const res = await fetch('/api/messages/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ toId: activeChatId, content }) });
+    const res = await fetch('/api/messages/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toId: activeChatId, content })
+    });
     const data = await res.json();
     if (data.message) {
       appendChatMessage(data.message);
       document.getElementById("chat-messages").scrollTop = 9999;
     }
-  } catch (e) { }
+  } catch (e) {}
 }
 
 async function pollUnread() {
+  if (!currentUser) return;
   try {
     const res = await fetch('/api/messages/unread/count');
     const data = await res.json();
     const badge = document.getElementById("unread-badge");
-    if (badge) { if (data.count > 0) { badge.textContent = data.count; badge.classList.remove("hidden"); } else badge.classList.add("hidden"); }
-  } catch (e) { }
+    if (badge) { data.count > 0 ? (badge.textContent = data.count, badge.classList.remove("hidden")) : badge.classList.add("hidden"); }
+  } catch (e) {}
 }
 
 // ─── Stats ────────────────────────────────────────────────────────────────────
@@ -407,7 +530,94 @@ async function openStats() {
           </div>
         </div>
       </div>`;
-  } catch (e) { }
+  } catch (e) {}
+}
+
+// ─── Profile modal ────────────────────────────────────────────────────────────
+function openProfile() {
+  const modal = document.getElementById("modal-profile");
+  modal.classList.remove("hidden");
+
+  // Show current avatar
+  const preview = document.getElementById("profile-avatar-preview");
+  if (currentUser.avatarUrl) {
+    preview.style.backgroundImage = `url(${currentUser.avatarUrl}?t=${Date.now()})`;
+    preview.textContent = "";
+  } else {
+    preview.style.backgroundImage = "";
+    preview.textContent = currentUser.username.charAt(0).toUpperCase();
+  }
+
+  document.getElementById("profile-username-display").textContent = currentUser.username;
+  document.getElementById("profile-avatar-error").classList.add("hidden");
+  document.getElementById("profile-remove-avatar").classList.toggle("hidden", !currentUser.avatarUrl);
+}
+
+async function uploadAvatar(file) {
+  const errorEl = document.getElementById("profile-avatar-error");
+  errorEl.classList.add("hidden");
+
+  if (file.size > 2 * 1024 * 1024) {
+    errorEl.textContent = "Image must be under 2MB";
+    errorEl.classList.remove("hidden");
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("avatar", file);
+
+  try {
+    const res = await fetch('/api/profile/avatar', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (data.error) { errorEl.textContent = data.error; errorEl.classList.remove("hidden"); return; }
+
+    currentUser.avatarUrl = data.avatarUrl;
+    updateUserBarAvatar();
+
+    const preview = document.getElementById("profile-avatar-preview");
+    preview.style.backgroundImage = `url(${data.avatarUrl}?t=${Date.now()})`;
+    preview.textContent = "";
+    document.getElementById("profile-remove-avatar").classList.remove("hidden");
+    showToast("Profile picture updated!", "success");
+  } catch (e) {
+    errorEl.textContent = "Upload failed";
+    errorEl.classList.remove("hidden");
+  }
+}
+
+async function removeAvatar() {
+  try {
+    await fetch('/api/profile/avatar', { method: 'DELETE' });
+    currentUser.avatarUrl = null;
+    updateUserBarAvatar();
+    const preview = document.getElementById("profile-avatar-preview");
+    preview.style.backgroundImage = "";
+    preview.textContent = currentUser.username.charAt(0).toUpperCase();
+    document.getElementById("profile-remove-avatar").classList.add("hidden");
+    showToast("Profile picture removed", "info");
+  } catch (e) {
+    showToast("Failed to remove picture", "error");
+  }
+}
+
+// ─── Dev panel ────────────────────────────────────────────────────────────────
+async function devBanUser(action) {
+  const input = document.getElementById("dev-ban-input");
+  const username = input.value.trim();
+  if (!username) { showToast("Enter a username", "error"); return; }
+
+  const endpoint = action === 'ban' ? '/api/dev/ban' : '/api/dev/unban';
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username })
+    });
+    const data = await res.json();
+    if (data.error) { showToast(data.error, "error"); return; }
+    showToast(action === 'ban' ? `${username} has been banned` : `${username} has been unbanned`, "success");
+    input.value = "";
+  } catch (e) { showToast("Server error", "error"); }
 }
 
 // ─── Challenge preview ────────────────────────────────────────────────────────
@@ -416,9 +626,9 @@ async function loadChallengePreview() {
     const res = await fetch('/api/challenges');
     const challenges = await res.json();
     const c = challenges[Math.floor(Math.random() * challenges.length)];
-    if (document.getElementById("preview-start")) document.getElementById("preview-start").textContent = c.start;
-    if (document.getElementById("preview-target-name")) document.getElementById("preview-target-name").textContent = c.target;
-  } catch (e) { }
+    document.getElementById("preview-start")?.textContent && (document.getElementById("preview-start").textContent = c.start);
+    document.getElementById("preview-target-name")?.textContent !== undefined && (document.getElementById("preview-target-name").textContent = c.target);
+  } catch (e) {}
 }
 
 // ─── Latest commit badge ──────────────────────────────────────────────────────
@@ -436,7 +646,7 @@ async function fetchLatestCommit() {
     document.getElementById("commit-hash").textContent = sha;
     document.getElementById("commit-msg").textContent = `${message} · ${timeAgo(date)}`;
     badge.classList.remove("hidden");
-  } catch (e) { }
+  } catch (e) {}
 }
 
 function timeAgo(date) {
@@ -490,6 +700,10 @@ window.addEventListener("DOMContentLoaded", () => {
   };
   document.getElementById("btn-auth-submit").onclick = () => submitAuth(isRegisterMode);
 
+  // Username click → profile modal
+  document.getElementById("user-bar-name").onclick = () => openProfile();
+  document.getElementById("user-bar-name").style.cursor = "pointer";
+
   // Logout
   document.getElementById("btn-logout").onclick = async () => {
     await fetch('/api/logout', { method: 'POST', credentials: 'include' });
@@ -504,7 +718,7 @@ window.addEventListener("DOMContentLoaded", () => {
     document.getElementById("input-guest-name").value = "";
   };
 
-  document.getElementById("btn-create-lobby").onclick = () => { createLobby(); };
+  document.getElementById("btn-create-lobby").onclick = () => createLobby();
 
   document.getElementById("btn-guest-cancel").onclick = () => document.getElementById("modal-guest").classList.add("hidden");
   document.getElementById("btn-guest-confirm").onclick = () => {
@@ -528,17 +742,28 @@ window.addEventListener("DOMContentLoaded", () => {
     document.getElementById("modal-join").classList.add("hidden");
     joinLobby(code);
   };
-  document.getElementById("input-room-code").addEventListener("input", e => { e.target.value = e.target.value.toUpperCase(); });
+  document.getElementById("input-room-code").addEventListener("input", e => e.target.value = e.target.value.toUpperCase());
   document.getElementById("input-room-code").addEventListener("keydown", e => { if (e.key === "Enter") document.getElementById("btn-join-confirm").click(); });
 
   // How to play
   document.getElementById("btn-how-to-play").onclick = () => document.getElementById("modal-how").classList.remove("hidden");
   document.getElementById("btn-how-close").onclick = () => document.getElementById("modal-how").classList.add("hidden");
 
-  // Friends
-  document.getElementById("btn-open-friends").onclick = () => { document.getElementById("modal-friends").classList.remove("hidden"); loadFriends(); };
-  document.getElementById("btn-open-friends-lobby").onclick = () => { document.getElementById("modal-friends").classList.remove("hidden"); loadFriends(); };
-  document.getElementById("btn-friends-close").onclick = () => document.getElementById("modal-friends").classList.add("hidden");
+  // Friends modal
+  document.getElementById("btn-open-friends").onclick = () => {
+    document.getElementById("modal-friends").classList.remove("hidden");
+    loadFriends();
+    startFriendsPolling();
+  };
+  document.getElementById("btn-open-friends-lobby")?.addEventListener("click", () => {
+    document.getElementById("modal-friends").classList.remove("hidden");
+    loadFriends();
+    startFriendsPolling();
+  });
+  document.getElementById("btn-friends-close").onclick = () => {
+    document.getElementById("modal-friends").classList.add("hidden");
+    stopFriendsPolling();
+  };
   document.getElementById("btn-friends-add").onclick = async () => {
     const username = document.getElementById("friends-add-input").value.trim();
     if (!username) return;
@@ -548,9 +773,13 @@ window.addEventListener("DOMContentLoaded", () => {
     else { showToast(`Friend request sent to ${username}!`, "success"); document.getElementById("friends-add-input").value = ""; }
   };
 
-  // Messages
+  // Messages modal
   document.getElementById("btn-open-messages").onclick = () => openMessages();
-  document.getElementById("btn-messages-close").onclick = () => { document.getElementById("modal-messages").classList.add("hidden"); activeChatId = null; };
+  document.getElementById("btn-messages-close").onclick = () => {
+    document.getElementById("modal-messages").classList.add("hidden");
+    activeChatId = null;
+    stopMessagesPolling();
+  };
   document.getElementById("btn-messages-back").onclick = () => { activeChatId = null; openMessages(); };
   document.getElementById("btn-chat-send").onclick = () => sendMessage();
   document.getElementById("chat-input").addEventListener("keydown", e => { if (e.key === "Enter") sendMessage(); });
@@ -558,6 +787,30 @@ window.addEventListener("DOMContentLoaded", () => {
   // Stats
   document.getElementById("btn-open-stats").onclick = () => openStats();
   document.getElementById("btn-stats-close").onclick = () => document.getElementById("modal-stats").classList.add("hidden");
+
+  // Profile modal
+  document.getElementById("btn-profile-close").onclick = () => document.getElementById("modal-profile").classList.add("hidden");
+
+  const avatarInput = document.getElementById("profile-avatar-input");
+  document.getElementById("profile-avatar-preview").onclick = () => avatarInput.click();
+  document.getElementById("btn-profile-upload").onclick = () => avatarInput.click();
+  avatarInput.onchange = (e) => { if (e.target.files[0]) uploadAvatar(e.target.files[0]); };
+
+  document.getElementById("profile-remove-avatar").onclick = () => removeAvatar();
+
+  // Drag and drop on avatar preview
+  const avatarPreview = document.getElementById("profile-avatar-preview");
+  avatarPreview.addEventListener("dragover", e => { e.preventDefault(); avatarPreview.style.opacity = "0.7"; });
+  avatarPreview.addEventListener("dragleave", () => { avatarPreview.style.opacity = ""; });
+  avatarPreview.addEventListener("drop", e => {
+    e.preventDefault(); avatarPreview.style.opacity = "";
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith("image/")) uploadAvatar(file);
+  });
+
+  // Dev panel
+  document.getElementById("btn-dev-ban").onclick = () => devBanUser('ban');
+  document.getElementById("btn-dev-unban").onclick = () => devBanUser('unban');
 
   // Lobby buttons
   document.getElementById("btn-copy-code").onclick = () => {
@@ -572,13 +825,24 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // Play again / leave gameover
   document.getElementById("btn-play-again").onclick = () => socket.emit("game:playAgain");
-  document.getElementById("btn-gameover-leave").onclick = () => { disableGameGuard(); socket.emit("lobby:leave"); document.getElementById("overlay-gameover").classList.add("hidden"); showScreen("home"); roomCode = null; isHost = false; };
-  document.getElementById("btn-leave-game").onclick = () => { disableGameGuard(); socket.emit("lobby:leave"); roomCode = null; isHost = false; showScreen("home"); };
+  document.getElementById("btn-gameover-leave").onclick = () => {
+    disableGameGuard();
+    socket.emit("lobby:leave");
+    document.getElementById("overlay-gameover").classList.add("hidden");
+    showScreen("home");
+    roomCode = null; isHost = false;
+  };
+  document.getElementById("btn-leave-game").onclick = () => {
+    disableGameGuard();
+    socket.emit("lobby:leave");
+    roomCode = null; isHost = false;
+    showScreen("home");
+  };
 
   // Wiki content click
   document.getElementById("wiki-content")?.addEventListener("click", handleWikiClick);
 
-  // Poll unread every 30s
+  // Poll unread every 30s regardless
   setInterval(() => { if (currentUser) pollUnread(); }, 30000);
 });
 
@@ -586,8 +850,16 @@ window.addEventListener("DOMContentLoaded", () => {
 function createLobby() { socket.emit("lobby:create", { playerName: playerName || "Guest" }); }
 function joinLobby(code) { socket.emit("lobby:join", { roomCode: code, playerName: playerName || "Guest" }); }
 
-socket.on("lobby:created", ({ code }) => { roomCode = code; isHost = true; document.getElementById("lobby-code-value").textContent = roomCode; showScreen("lobby"); });
-socket.on("lobby:joined", ({ code }) => { roomCode = code; isHost = false; document.getElementById("lobby-code-value").textContent = roomCode; showScreen("lobby"); });
+socket.on("lobby:created", ({ code }) => {
+  roomCode = code; isHost = true;
+  document.getElementById("lobby-code-value").textContent = roomCode;
+  showScreen("lobby");
+});
+socket.on("lobby:joined", ({ code }) => {
+  roomCode = code; isHost = false;
+  document.getElementById("lobby-code-value").textContent = roomCode;
+  showScreen("lobby");
+});
 socket.on("error", ({ msg }) => showToast(msg, "error"));
 
 // ─── Invites ──────────────────────────────────────────────────────────────────
@@ -598,7 +870,11 @@ socket.on("invite:receive", ({ fromUsername, roomCode: inviteCode }) => {
   btn.className = "btn btn-primary";
   btn.style.cssText = "margin-top:4px;width:100%;font-size:.8rem";
   btn.textContent = `Join ${fromUsername}'s lobby`;
-  btn.onclick = () => { playerName = currentUser?.username || playerName || "Guest"; joinLobby(inviteCode); btn.closest(".toast")?.remove(); };
+  btn.onclick = () => {
+    playerName = currentUser?.username || playerName || "Guest";
+    joinLobby(inviteCode);
+    btn.closest(".toast")?.remove();
+  };
   const toasts = container.querySelectorAll(".toast");
   if (toasts.length > 0) toasts[toasts.length - 1].appendChild(btn);
 });
@@ -639,7 +915,11 @@ function updateScoreboard(players) {
   const list = document.getElementById("game-scoreboard");
   if (!list) return;
   list.innerHTML = "";
-  const sorted = [...players].sort((a, b) => { if (a.finished && !b.finished) return -1; if (!a.finished && b.finished) return 1; return b.clicks - a.clicks; });
+  const sorted = [...players].sort((a, b) => {
+    if (a.finished && !b.finished) return -1;
+    if (!a.finished && b.finished) return 1;
+    return b.clicks - a.clicks;
+  });
   sorted.forEach((p, i) => {
     const li = document.createElement("li");
     li.className = "score-item" + (p.finished ? " score-finished" : "") + (p.id === socket.id ? " score-you" : "");
@@ -664,8 +944,12 @@ function startFairTimer() {
 function pauseTimer() { pageLoading = true; document.getElementById("game-timer")?.classList.add("loading"); }
 function resumeTimer() { pageLoading = false; document.getElementById("game-timer")?.classList.remove("loading"); lastTickTime = Date.now(); }
 function stopTimer() { if (timerInterval) { clearInterval(timerInterval); timerInterval = null; } }
-function updateTimerDisplay() { const s = Math.floor(elapsedMs / 1000); const el = document.getElementById("timer-value"); if (el) el.textContent = `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`; }
-socket.on("game:tick", () => { });
+function updateTimerDisplay() {
+  const s = Math.floor(elapsedMs / 1000);
+  const el = document.getElementById("timer-value");
+  if (el) el.textContent = `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
+}
+socket.on("game:tick", () => {});
 
 // ─── Game starting ────────────────────────────────────────────────────────────
 socket.on("game:starting", (data) => {
@@ -698,7 +982,8 @@ socket.on("game:starting", (data) => {
       updatePathTrail(); updateBackButton(); startFairTimer(); enableGameGuard();
       loadWikiPage(startTitle, data.startArticle);
     } else {
-      numEl.textContent = count; numEl.style.animation = "none"; void numEl.offsetWidth; numEl.style.animation = "";
+      numEl.textContent = count;
+      numEl.style.animation = "none"; void numEl.offsetWidth; numEl.style.animation = "";
     }
   }, 1000);
 });
@@ -730,8 +1015,9 @@ async function loadWikiPage(title, displayTitle) {
       else tocCol.classList.remove("has-toc");
     }
     document.getElementById("game-current-article").textContent = displayTitle || resolvedTitle;
-  } catch (err) { if (wikiArea) wikiArea.innerHTML = `<p style="color:#d33;padding:20px">Failed to load article. Try another link.</p>`; console.error(err); }
-  finally { if (loadingEl) loadingEl.classList.add("hidden"); resumeTimer(); }
+  } catch (err) {
+    if (wikiArea) wikiArea.innerHTML = `<p style="color:#d33;padding:20px">Failed to load article. Try another link.</p>`;
+  } finally { if (loadingEl) loadingEl.classList.add("hidden"); resumeTimer(); }
 }
 
 async function loadWikiPageNoHistory(title, displayTitle, restoreScrollY = 0) {
@@ -819,7 +1105,15 @@ function triggerPunishment() {
   banner.classList.remove("hidden"); let remaining = 30; timerEl.textContent = remaining;
   const cur = myPath.length ? myPath[myPath.length - 1] : null;
   if (cur) loadWikiPage(cur.url.split("/wiki/")[1], cur.title);
-  punishTimer = setInterval(() => { remaining--; timerEl.textContent = remaining; if (remaining <= 0) { clearInterval(punishTimer); punished = false; banner.classList.add("hidden"); showToast("Punishment over! Back to English.", "success"); const c = myPath.length ? myPath[myPath.length - 1] : null; if (c) loadWikiPage(c.url.split("/wiki/")[1], c.title); } }, 1000);
+  punishTimer = setInterval(() => {
+    remaining--; timerEl.textContent = remaining;
+    if (remaining <= 0) {
+      clearInterval(punishTimer); punished = false; banner.classList.add("hidden");
+      showToast("Punishment over! Back to English.", "success");
+      const c = myPath.length ? myPath[myPath.length - 1] : null;
+      if (c) loadWikiPage(c.url.split("/wiki/")[1], c.title);
+    }
+  }, 1000);
 }
 
 // ─── TOC builder ─────────────────────────────────────────────────────────────
@@ -839,7 +1133,12 @@ function buildTOC(sections, wikiArea) {
     const tmp = document.createElement("span"); tmp.innerHTML = section.line;
     const textSpan = document.createElement("span"); textSpan.textContent = tmp.textContent;
     a.appendChild(numSpan); a.appendChild(textSpan);
-    a.addEventListener("click", e => { e.preventDefault(); const scrollArea = document.getElementById("wiki-scroll-area"); if (!scrollArea || !wikiArea) return; const target = wikiArea.querySelector(`#${CSS.escape(section.anchor)}`) || wikiArea.querySelector(`[id="${section.anchor}"]`) || wikiArea.querySelector(`span[id="${section.anchor}"]`); if (target) { const containerTop = scrollArea.getBoundingClientRect().top, targetTop = target.getBoundingClientRect().top; scrollArea.scrollTo({ top: targetTop - containerTop + scrollArea.scrollTop - 8, behavior: "smooth" }); } });
+    a.addEventListener("click", e => {
+      e.preventDefault();
+      const scrollArea = document.getElementById("wiki-scroll-area"); if (!scrollArea || !wikiArea) return;
+      const target = wikiArea.querySelector(`#${CSS.escape(section.anchor)}`) || wikiArea.querySelector(`[id="${section.anchor}"]`) || wikiArea.querySelector(`span[id="${section.anchor}"]`);
+      if (target) { const containerTop = scrollArea.getBoundingClientRect().top, targetTop = target.getBoundingClientRect().top; scrollArea.scrollTo({ top: targetTop - containerTop + scrollArea.scrollTop - 8, behavior: "smooth" }); }
+    });
     li.appendChild(a); ul.appendChild(li);
   });
   nav.appendChild(ul); return nav;
@@ -860,23 +1159,53 @@ function handlePopstate(e) { if (!inGame) return; history.pushState({ gameActive
 function handleBeforeUnload(e) { if (!inGame) return; e.preventDefault(); e.returnValue = "You're in a race!"; return e.returnValue; }
 
 // ─── Win / Game over ─────────────────────────────────────────────────────────
-socket.on("game:won", ({ clicks, time }) => { stopTimer(); disableGameGuard(); const s = Math.floor(time / 1000); showToast(`🏆 You won in ${clicks} clicks (${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")})!`, "success"); });
+socket.on("game:won", ({ clicks, time }) => {
+  stopTimer(); disableGameGuard();
+  const s = Math.floor(time / 1000);
+  showToast(`🏆 You won in ${clicks} clicks (${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")})!`, "success");
+});
 
 socket.on("game:over", ({ leaderboard, winner }) => {
   stopTimer(); disableGameGuard();
-  const overlay = document.getElementById("overlay-gameover"), list = document.getElementById("gameover-leaderboard"), title = document.getElementById("gameover-title"), result = document.getElementById("gameover-your-result"), playBtn = document.getElementById("btn-play-again"), pathDiv = document.getElementById("gameover-winner-path");
+  const overlay = document.getElementById("overlay-gameover"), list = document.getElementById("gameover-leaderboard"),
+    title = document.getElementById("gameover-title"), result = document.getElementById("gameover-your-result"),
+    playBtn = document.getElementById("btn-play-again"), pathDiv = document.getElementById("gameover-winner-path");
   list.innerHTML = ""; overlay.classList.remove("hidden");
   const me = leaderboard.find(p => p.id === socket.id), iWon = me && me.finished && me.rank === 1;
-  result.textContent = iWon ? "🏆" : "😔"; title.textContent = iWon ? "You Won!" : `${winner?.name || "Someone"} Won!`;
-  if (winner?.articlePath?.length > 0) { pathDiv.classList.remove("hidden"); pathDiv.innerHTML = `<div class="winner-path-label">🏆 ${winner.name}'s winning path (${winner.clicks} clicks):</div><div class="winner-path-pills">${winner.articlePath.map((a, i) => `<span class="winner-pill${i === winner.articlePath.length - 1 ? " winner-pill-last" : ""}">${a}</span>` + (i < winner.articlePath.length - 1 ? '<span class="winner-arrow">›</span>' : '')).join('')}</div>`; }
-  else pathDiv.classList.add("hidden");
+  result.textContent = iWon ? "🏆" : "😔";
+  title.textContent = iWon ? "You Won!" : `${winner?.name || "Someone"} Won!`;
+  if (winner?.articlePath?.length > 0) {
+    pathDiv.classList.remove("hidden");
+    pathDiv.innerHTML = `<div class="winner-path-label">🏆 ${winner.name}'s winning path (${winner.clicks} clicks):</div><div class="winner-path-pills">${winner.articlePath.map((a, i) => `<span class="winner-pill${i === winner.articlePath.length - 1 ? " winner-pill-last" : ""}">${a}</span>` + (i < winner.articlePath.length - 1 ? '<span class="winner-arrow">›</span>' : '')).join('')}</div>`;
+  } else pathDiv.classList.add("hidden");
+
   const rankEmojis = ["🥇", "🥈", "🥉"];
-  leaderboard.forEach((p, i) => { const li = document.createElement("li"); li.className = "gameover-item" + (i < 3 ? ` podium-${i + 1}` : ""); const rankEl = document.createElement("span"); rankEl.className = "gameover-rank-emoji"; rankEl.textContent = rankEmojis[i] || `#${i + 1}`; const nameEl = document.createElement("span"); nameEl.className = "gameover-player-name"; nameEl.textContent = p.name + (p.id === socket.id ? " (you)" : ""); const statsEl = document.createElement("span"); statsEl.className = p.finished ? "gameover-player-stats" : "gameover-dnf"; if (p.finished) { const s = Math.floor(p.finishTime / 1000); statsEl.textContent = `${p.clicks} clicks · ${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`; } else statsEl.textContent = `${p.clicks} clicks — Did not finish`; li.appendChild(rankEl); li.appendChild(nameEl); li.appendChild(statsEl); list.appendChild(li); });
+  leaderboard.forEach((p, i) => {
+    const li = document.createElement("li"); li.className = "gameover-item" + (i < 3 ? ` podium-${i + 1}` : "");
+    const rankEl = document.createElement("span"); rankEl.className = "gameover-rank-emoji"; rankEl.textContent = rankEmojis[i] || `#${i + 1}`;
+    const nameEl = document.createElement("span"); nameEl.className = "gameover-player-name"; nameEl.textContent = p.name + (p.id === socket.id ? " (you)" : "");
+    const statsEl = document.createElement("span"); statsEl.className = p.finished ? "gameover-player-stats" : "gameover-dnf";
+    if (p.finished) { const s = Math.floor(p.finishTime / 1000); statsEl.textContent = `${p.clicks} clicks · ${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`; }
+    else statsEl.textContent = `${p.clicks} clicks — Did not finish`;
+    li.appendChild(rankEl); li.appendChild(nameEl); li.appendChild(statsEl); list.appendChild(li);
+  });
   if (isHost) playBtn.classList.remove("hidden"); else playBtn.classList.add("hidden");
 });
 
-socket.on("game:reset", () => { stopTimer(); disableGameGuard(); document.getElementById("overlay-gameover").classList.add("hidden"); if (punishTimer) clearInterval(punishTimer); punished = false; document.getElementById("punishment-banner").classList.add("hidden"); const sb = document.getElementById("game-scoreboard"); if (sb) sb.innerHTML = ""; showScreen("lobby"); });
+socket.on("game:reset", () => {
+  stopTimer(); disableGameGuard();
+  document.getElementById("overlay-gameover").classList.add("hidden");
+  if (punishTimer) clearInterval(punishTimer);
+  punished = false;
+  document.getElementById("punishment-banner").classList.add("hidden");
+  const sb = document.getElementById("game-scoreboard"); if (sb) sb.innerHTML = "";
+  showScreen("lobby");
+});
 
 // ─── Avatar colors ────────────────────────────────────────────────────────────
-const AVATAR_COLORS = ["#3366CC", "#2E7D32", "#6A1B9A", "#C62828", "#AD6800", "#00695C", "#1565C0", "#4527A0", "#558B2F", "#BF360C"];
-function avatarColor(name) { let hash = 0; for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash); return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length]; }
+const AVATAR_COLORS = ["#3366CC","#2E7D32","#6A1B9A","#C62828","#AD6800","#00695C","#1565C0","#4527A0","#558B2F","#BF360C"];
+function avatarColor(name) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}

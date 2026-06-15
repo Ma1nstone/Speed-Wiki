@@ -19,7 +19,13 @@ mongoose.connect(process.env.MONGODB_URI)
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+const io = new Server(server, {
+  cors: { origin: '*' },
+
+  // Faster disconnect detection
+  pingInterval: 5000, // send ping every 5 seconds
+  pingTimeout: 5000   // disconnect after 5 seconds without response
+});
 
 // Serve public folder AND root (for favicon)
 app.use(express.static(path.join(__dirname, 'public')));
@@ -412,6 +418,10 @@ io.on('connection', (socket) => {
 
   if (userId) {
     userSockets.set(userId.toString(), socket.id);
+
+    io.emit("user:online", {
+      userId: userId.toString()
+    });
   }
 
   socket.on('invite:send', ({ toId, roomCode }, callback) => {
@@ -643,6 +653,10 @@ io.on('connection', (socket) => {
 
     if (userId) {
       userSockets.delete(userId.toString());
+
+      io.emit("user:offline", {
+        userId: userId.toString()
+      });
     }
 
     console.log(`[-] ${socket.id} disconnected | total: ${onlineCount}`);

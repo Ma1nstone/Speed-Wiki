@@ -126,6 +126,23 @@ async function submitAuth(isRegister) {
   } catch (e) { errorEl.textContent = "Server error"; errorEl.classList.remove("hidden"); }
 }
 
+// ─── Friends modal auto-refresh ───────────────────────────────────────────────
+let friendsRefreshInterval = null;
+
+function startFriendsRefresh() {
+  stopFriendsRefresh();
+  friendsRefreshInterval = setInterval(() => {
+    const modal = document.getElementById("modal-friends");
+    if (modal && !modal.classList.contains("hidden")) {
+      loadFriends();
+    }
+  }, 5000);
+}
+
+function stopFriendsRefresh() {
+  if (friendsRefreshInterval) { clearInterval(friendsRefreshInterval); friendsRefreshInterval = null; }
+}
+
 // ─── Friends ──────────────────────────────────────────────────────────────────
 async function loadFriends() {
   try {
@@ -278,14 +295,30 @@ async function openMessages() {
       return;
     }
     data.friends.forEach(f => {
+      const isOnline = onlineUsers.has(f._id.toString());
+
       const li = document.createElement("li");
       li.className = "player-list-item";
-      li.style.cursor = "pointer";
-      li.innerHTML = `<span class="player-name">${f.username}</span><span style="font-size:.75rem;color:var(--ink-muted)">→</span>`;
-      li.onclick = () => openChatWith(f._id, f.username);
+
+      li.innerHTML = `
+        <span class="player-name" style="flex:1;display:flex;align-items:center;gap:8px;">
+          <span class="status-dot ${isOnline ? "online" : "offline"}"></span>
+          ${f.username}
+        </span>
+
+        <button class="btn btn-ghost"
+          onclick="openChatWith('${f._id}','${f.username}')">
+          Message
+        </button>
+
+        <button class="btn btn-primary"
+          onclick="inviteFriend('${f._id}','${f.username}')">
+          Invite
+        </button>
+      `;
+
       list.appendChild(li);
     });
-  } catch (e) { }
 }
 
 async function openChatWith(userId, username) {

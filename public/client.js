@@ -208,7 +208,7 @@ function startFriendsPolling() {
     if (modal && !modal.classList.contains("hidden")) {
       updateFriendStatusDots();
     }
-  }, 3000);
+  }, 1000);
 }
 
 function stopFriendsPolling() {

@@ -2,6 +2,8 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const multer = require('multer');
+const fs = require('fs');
 const userSockets = new Map(); // userId -> socketId
 
 const mongoose = require('mongoose');
@@ -21,10 +23,28 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: '*' },
+  pingInterval: 5000,
+  pingTimeout: 5000
+});
 
-  // Faster disconnect detection
-  pingInterval: 5000, // send ping every 5 seconds
-  pingTimeout: 5000   // disconnect after 5 seconds without response
+// ─── Profile picture upload setup ────────────────────────────────────────────
+const avatarDir = path.join(__dirname, 'public', 'avatars');
+if (!fs.existsSync(avatarDir)) fs.mkdirSync(avatarDir, { recursive: true });
+
+const avatarStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, avatarDir),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
+    cb(null, `${req.session.userId}${ext}`);
+  }
+});
+const avatarUpload = multer({
+  storage: avatarStorage,
+  limits: { fileSize: 2 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith('image/')) return cb(new Error('Images only'));
+    cb(null, true);
+  }
 });
 
 // Serve public folder AND root (for favicon)
@@ -51,16 +71,14 @@ const requireAuth = (req, res, next) => {
   next();
 };
 
+const DEV_USERNAME = 'Ma1nstone';
+
 // ─── Auth routes ─────────────────────────────────────────────────────────────
 app.post('/api/register', async (req, res) => {
   try {
     const { username, password } = req.body;
-    if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password required' });
-    }
-    if (password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
-    }
+    if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+    if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
 
     const existing = await User.findOne({ username: new RegExp(`^${username}$`, 'i') });
     if (existing) return res.status(400).json({ error: 'Username already taken' });
@@ -71,11 +89,7 @@ app.post('/api/register', async (req, res) => {
     req.session.userId = user._id;
     req.session.username = user.username;
 
-    res.json({
-      success: true,
-      username: user.username,
-      userId: user._id
-    });
+    res.json({ success: true, username: user.username, userId: user._id });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -90,32 +104,71 @@ app.post('/api/login', async (req, res) => {
     const match = await bcrypt.compare(password, user.password);
     if (!match) return res.status(400).json({ error: 'Invalid username or password' });
 
+    if (user.banned) {
+      return res.json({
+        success: true,
+        username: user.username,
+        userId: user._id,
+        banned: true
+      });
+    }
+
     req.session.userId = user._id;
     req.session.username = user.username;
 
-    res.json({
-      success: true,
-      username: user.username,
-      userId: user._id
-    });
+    res.json({ success: true, username: user.username, userId: user._id });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 app.post('/api/logout', (req, res) => {
-  req.session.destroy(() => {
-    res.json({ success: true });
-  });
+  req.session.destroy(() => res.json({ success: true }));
 });
 
-app.get('/api/me', (req, res) => {
+app.get('/api/me', async (req, res) => {
   if (!req.session.userId) return res.json({ loggedIn: false });
-  res.json({
-    loggedIn: true,
-    username: req.session.username,
-    userId: req.session.userId
-  });
+  try {
+    const user = await User.findById(req.session.userId);
+    if (!user) return res.json({ loggedIn: false });
+    if (user.banned) {
+      req.session.destroy(() => {});
+      return res.json({ loggedIn: true, banned: true, username: user.username, userId: user._id });
+    }
+    const isDev = user.username.toLowerCase() === DEV_USERNAME.toLowerCase();
+    // Find avatar
+    let avatarUrl = null;
+    for (const ext of ['.jpg', '.jpeg', '.png', '.gif', '.webp']) {
+      const p = path.join(avatarDir, `${user._id}${ext}`);
+      if (fs.existsSync(p)) { avatarUrl = `/avatars/${user._id}${ext}`; break; }
+    }
+    res.json({ loggedIn: true, username: user.username, userId: user._id, isDev, avatarUrl });
+  } catch (e) {
+    res.json({ loggedIn: false });
+  }
+});
+
+// ─── Profile picture routes ───────────────────────────────────────────────────
+app.post('/api/profile/avatar', requireAuth, avatarUpload.single('avatar'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const avatarUrl = `/avatars/${req.file.filename}`;
+    res.json({ success: true, avatarUrl });
+  } catch (err) {
+    res.status(500).json({ error: 'Upload failed' });
+  }
+});
+
+app.delete('/api/profile/avatar', requireAuth, async (req, res) => {
+  try {
+    for (const ext of ['.jpg', '.jpeg', '.png', '.gif', '.webp']) {
+      const p = path.join(avatarDir, `${req.session.userId}${ext}`);
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to remove avatar' });
+  }
 });
 
 // ─── Online status route ──────────────────────────────────────────────────────
@@ -135,23 +188,14 @@ app.post('/api/friends/request', requireAuth, async (req, res) => {
   try {
     const { username } = req.body;
     const target = await User.findOne({ username: new RegExp(`^${username}$`, 'i') });
-
     if (!target) return res.status(404).json({ error: 'User not found' });
-    if (target._id.toString() === req.session.userId.toString()) {
-      return res.status(400).json({ error: 'Cannot add yourself' });
-    }
-
-    const alreadyFriends = target.friends.includes(req.session.userId);
+    if (target._id.toString() === req.session.userId.toString()) return res.status(400).json({ error: 'Cannot add yourself' });
+    const alreadyFriends = target.friends.some(f => f.toString() === req.session.userId.toString());
     if (alreadyFriends) return res.status(400).json({ error: 'Already friends' });
-
-    const alreadyRequested = target.friendRequests.some(
-      r => r.from.toString() === req.session.userId.toString()
-    );
+    const alreadyRequested = target.friendRequests.some(r => r.from.toString() === req.session.userId.toString());
     if (alreadyRequested) return res.status(400).json({ error: 'Request already sent' });
-
     target.friendRequests.push({ from: req.session.userId });
     await target.save();
-
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -163,16 +207,12 @@ app.post('/api/friends/accept', requireAuth, async (req, res) => {
     const { fromId } = req.body;
     const me = await User.findById(req.session.userId);
     const them = await User.findById(fromId);
-
     if (!me || !them) return res.status(404).json({ error: 'User not found' });
-
     me.friendRequests = me.friendRequests.filter(r => r.from.toString() !== fromId);
-    if (!me.friends.includes(fromId)) me.friends.push(fromId);
-    if (!them.friends.includes(me._id)) them.friends.push(me._id);
-
+    if (!me.friends.some(f => f.toString() === fromId)) me.friends.push(fromId);
+    if (!them.friends.some(f => f.toString() === me._id.toString())) them.friends.push(me._id);
     await me.save();
     await them.save();
-
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -183,11 +223,38 @@ app.post('/api/friends/decline', requireAuth, async (req, res) => {
   try {
     const { fromId } = req.body;
     const me = await User.findById(req.session.userId);
-
     if (!me) return res.status(404).json({ error: 'User not found' });
-
     me.friendRequests = me.friendRequests.filter(r => r.from.toString() !== fromId);
     await me.save();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ─── Remove friend + delete messages ─────────────────────────────────────────
+app.post('/api/friends/remove', requireAuth, async (req, res) => {
+  try {
+    const { friendId } = req.body;
+    const me = await User.findById(req.session.userId);
+    const them = await User.findById(friendId);
+    if (!me) return res.status(404).json({ error: 'User not found' });
+
+    me.friends = me.friends.filter(f => f.toString() !== friendId);
+    await me.save();
+
+    if (them) {
+      them.friends = them.friends.filter(f => f.toString() !== req.session.userId.toString());
+      await them.save();
+    }
+
+    // Delete all messages between the two users
+    await Message.deleteMany({
+      $or: [
+        { from: req.session.userId, to: friendId },
+        { from: friendId, to: req.session.userId }
+      ]
+    });
 
     res.json({ success: true });
   } catch (err) {
@@ -200,7 +267,6 @@ app.get('/api/friends', requireAuth, async (req, res) => {
     const me = await User.findById(req.session.userId)
       .populate('friends', 'username')
       .populate('friendRequests.from', 'username');
-
     res.json({ friends: me.friends, requests: me.friendRequests });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -212,13 +278,7 @@ app.post('/api/messages/send', requireAuth, async (req, res) => {
   try {
     const { toId, content } = req.body;
     if (!content?.trim()) return res.status(400).json({ error: 'Empty message' });
-
-    const msg = await Message.create({
-      from: req.session.userId,
-      to: toId,
-      content: content.trim()
-    });
-
+    const msg = await Message.create({ from: req.session.userId, to: toId, content: content.trim() });
     res.json({ success: true, message: msg });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -247,10 +307,7 @@ app.get('/api/messages/:withId', requireAuth, async (req, res) => {
 
 app.get('/api/messages/unread/count', requireAuth, async (req, res) => {
   try {
-    const count = await Message.countDocuments({
-      to: req.session.userId,
-      read: false
-    });
+    const count = await Message.countDocuments({ to: req.session.userId, read: false });
     res.json({ count });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -262,12 +319,53 @@ app.get('/api/stats/:username', async (req, res) => {
   try {
     const user = await User.findOne({ username: req.params.username });
     if (!user) return res.status(404).json({ error: 'User not found' });
-
-    const records = await GameRecord.find({ userId: user._id })
-      .sort({ playedAt: -1 })
-      .limit(20);
-
+    const records = await GameRecord.find({ userId: user._id }).sort({ playedAt: -1 }).limit(20);
     res.json({ stats: user.stats, history: records });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ─── Dev routes (Ma1nstone only) ─────────────────────────────────────────────
+app.post('/api/dev/ban', requireAuth, async (req, res) => {
+  try {
+    const me = await User.findById(req.session.userId);
+    if (!me || me.username.toLowerCase() !== DEV_USERNAME.toLowerCase()) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    const { username } = req.body;
+    const target = await User.findOne({ username: new RegExp(`^${username}$`, 'i') });
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    if (target.username.toLowerCase() === DEV_USERNAME.toLowerCase()) {
+      return res.status(400).json({ error: 'Cannot ban dev account' });
+    }
+    target.banned = true;
+    await target.save();
+
+    // Kick them if online
+    const targetSocketId = userSockets.get(target._id.toString());
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('account:banned');
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/dev/unban', requireAuth, async (req, res) => {
+  try {
+    const me = await User.findById(req.session.userId);
+    if (!me || me.username.toLowerCase() !== DEV_USERNAME.toLowerCase()) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    const { username } = req.body;
+    const target = await User.findOne({ username: new RegExp(`^${username}$`, 'i') });
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    target.banned = false;
+    await target.save();
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -275,20 +373,15 @@ app.get('/api/stats/:username', async (req, res) => {
 
 // ─── Suppress CSS/JS sourcemap 404s ──────────────────────────────────────────
 app.use((req, res, next) => {
-  if (req.path.endsWith('.css.map') || req.path.endsWith('.js.map')) {
-    return res.status(204).end();
-  }
+  if (req.path.endsWith('.css.map') || req.path.endsWith('.js.map')) return res.status(204).end();
   next();
 });
 
 // ─── Portal route ─────────────────────────────────────────────────────────────
-app.get('/portal', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'portal.html'));
-});
+app.get('/portal', (req, res) => res.sendFile(path.join(__dirname, 'public', 'portal.html')));
 
 // ─── Race Challenges ──────────────────────────────────────────────────────────
 const { RACE_CHALLENGES } = require('./RaceChallenges.js');
-
 app.get('/api/challenges', (req, res) => {
   res.json(RACE_CHALLENGES.map(c => ({ start: c.start, target: c.target })));
 });
@@ -300,32 +393,20 @@ let onlineCount = 0;
 function generateRoomCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code;
-  do {
-    code = Array.from({ length: 5 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-  } while (rooms.has(code));
+  do { code = Array.from({ length: 5 }, () => chars[Math.floor(Math.random() * chars.length)]).join(''); } while (rooms.has(code));
   return code;
 }
 
 function getRoomPublicState(room) {
   return {
-    code: room.code,
-    host: room.host,
-    status: room.status,
-    target: room.target,
-    targetUrl: room.targetUrl,
-    startArticle: room.startArticle,
-    startUrl: room.startUrl,
-    startTime: room.startTime,
-    timeLimit: room.timeLimit,
+    code: room.code, host: room.host, status: room.status,
+    target: room.target, targetUrl: room.targetUrl,
+    startArticle: room.startArticle, startUrl: room.startUrl,
+    startTime: room.startTime, timeLimit: room.timeLimit,
     players: Array.from(room.players.values()).map(p => ({
-      id: p.id,
-      name: p.name,
-      currentArticle: p.currentArticle,
-      articlePath: p.articlePath,
-      clicks: p.clicks,
-      finished: p.finished,
-      finishTime: p.finishTime,
-      rank: p.rank,
+      id: p.id, name: p.name, currentArticle: p.currentArticle,
+      articlePath: p.articlePath, clicks: p.clicks,
+      finished: p.finished, finishTime: p.finishTime, rank: p.rank,
     })),
   };
 }
@@ -336,10 +417,7 @@ function broadcastRoomState(room) {
 
 function cleanupRoom(roomCode) {
   const room = rooms.get(roomCode);
-  if (room) {
-    if (room.gameTimer) clearInterval(room.gameTimer);
-    rooms.delete(roomCode);
-  }
+  if (room) { if (room.gameTimer) clearInterval(room.gameTimer); rooms.delete(roomCode); }
 }
 
 function broadcastOnlineCount() {
@@ -352,15 +430,7 @@ function endGame(room) {
   room.status = 'finished';
 
   const leaderboard = Array.from(room.players.values())
-    .map(p => ({
-      id: p.id,
-      name: p.name,
-      clicks: p.clicks,
-      finished: p.finished,
-      finishTime: p.finishTime,
-      rank: p.rank,
-      articlePath: p.articlePath
-    }))
+    .map(p => ({ id: p.id, name: p.name, clicks: p.clicks, finished: p.finished, finishTime: p.finishTime, rank: p.rank, articlePath: p.articlePath }))
     .sort((a, b) => {
       if (a.finished && !b.finished) return -1;
       if (!a.finished && b.finished) return 1;
@@ -371,151 +441,108 @@ function endGame(room) {
   const winner = leaderboard.find(p => p.finished) || null;
   io.to(room.code).emit('game:over', { leaderboard, winner });
   broadcastRoomState(room);
-  console.log(`[GAME] ${room.code}: game over`);
 }
 
 function handleLeave(socket) {
   const code = socket.data.roomCode;
   if (!code) return;
-
   const room = rooms.get(code);
   if (!room) return;
-
   const playerName = room.players.get(socket.id)?.name || 'A player';
   room.players.delete(socket.id);
   socket.leave(code);
   socket.data.roomCode = null;
-
-  if (room.players.size === 0) {
-    cleanupRoom(code);
-    return;
-  }
-
+  if (room.players.size === 0) { cleanupRoom(code); return; }
   if (room.host === socket.id) {
     room.host = room.players.keys().next().value;
-    io.to(code).emit('toast', {
-      msg: `${room.players.get(room.host).name} is now the host`,
-      type: 'info'
-    });
+    io.to(code).emit('toast', { msg: `${room.players.get(room.host).name} is now the host`, type: 'info' });
   }
-
-  io.to(code).emit('toast', {
-    msg: `${playerName} left the lobby`,
-    type: 'warning'
-  });
-
+  io.to(code).emit('toast', { msg: `${playerName} left the lobby`, type: 'warning' });
   broadcastRoomState(room);
 }
 
 // ─── Socket Events ────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
-  // FIX: increment online count on connect
   onlineCount++;
   broadcastOnlineCount();
 
-  const userId = socket.request.session?.userId;
+  const userId = socket.request.session?.userId?.toString();
   const username = socket.request.session?.username;
 
   if (userId) {
-    userSockets.set(userId.toString(), socket.id);
-
-    io.emit("user:online", {
-      userId: userId.toString()
-    });
+    // Store ALL sockets for this user (handle multiple tabs)
+    if (!userSockets.has(userId)) userSockets.set(userId, new Set());
+    userSockets.get(userId).add(socket.id);
+    io.emit('user:online', { userId });
   }
 
   socket.on('invite:send', ({ toId, roomCode }, callback) => {
-    const targetSocketId = userSockets.get(toId?.toString());
+    const toIdStr = toId?.toString();
+    const socketSet = userSockets.get(toIdStr);
 
-    if (!targetSocketId) {
-      // User is offline — tell the sender specifically
-      if (typeof callback === "function") {
-        return callback({ success: false, reason: "offline" });
-      }
+    if (!socketSet || socketSet.size === 0) {
+      if (typeof callback === 'function') return callback({ success: false, reason: 'offline' });
       return socket.emit('error', { msg: 'User is offline' });
     }
 
-    io.to(targetSocketId).emit('invite:receive', {
-      fromUsername: username,
-      roomCode
-    });
-
-    if (typeof callback === "function") {
-      callback({ success: true });
+    // Send to all sockets for that user
+    for (const sid of socketSet) {
+      io.to(sid).emit('invite:receive', { fromUsername: username, roomCode });
     }
+
+    if (typeof callback === 'function') callback({ success: true });
   });
 
-  // Let client check online status of specific user IDs
   socket.on('users:online-check', ({ userIds }, callback) => {
     if (!Array.isArray(userIds)) return callback && callback({ online: [] });
-    const online = userIds.filter(id => userSockets.has(id.toString()));
-    if (typeof callback === "function") callback({ online });
+    const online = userIds.filter(id => {
+      const s = userSockets.get(id.toString());
+      return s && s.size > 0;
+    });
+    if (typeof callback === 'function') callback({ online });
   });
 
   socket.on('lobby:create', ({ playerName }) => {
     if (!playerName?.trim()) return socket.emit('error', { msg: 'Name required' });
-
     const code = generateRoomCode();
     const room = {
-      code,
-      host: socket.id,
-      players: new Map(),
-      status: 'waiting',
-      target: null,
-      targetUrl: null,
-      startArticle: null,
-      startUrl: null,
-      startTime: null,
-      gameTimer: null,
-      timeLimit: 999999,
+      code, host: socket.id,
+      players: new Map(), status: 'waiting',
+      target: null, targetUrl: null, startArticle: null, startUrl: null,
+      startTime: null, gameTimer: null, timeLimit: 999999,
     };
-
     room.players.set(socket.id, {
-      id: socket.id,
-      name: playerName.trim().slice(0, 20),
-      currentArticle: '',
-      articlePath: [],
-      clicks: 0,
-      finished: false,
-      finishTime: null,
-      rank: null,
+      id: socket.id, name: playerName.trim().slice(0, 20),
+      currentArticle: '', articlePath: [], clicks: 0,
+      finished: false, finishTime: null, rank: null,
+      userId: userId || null,
     });
-
     rooms.set(code, room);
     socket.join(code);
     socket.data.roomCode = code;
     socket.emit('lobby:created', { code });
     broadcastRoomState(room);
-    console.log(`[ROOM] ${code} created by ${playerName}`);
   });
 
   socket.on('lobby:join', ({ roomCode, playerName }) => {
     const code = (roomCode || '').toUpperCase().trim();
     if (!playerName?.trim()) return socket.emit('error', { msg: 'Name required' });
     if (!code) return socket.emit('error', { msg: 'Room code required' });
-
     const room = rooms.get(code);
     if (!room) return socket.emit('error', { msg: 'Room not found. Check the code and try again.' });
     if (room.status !== 'waiting') return socket.emit('error', { msg: 'Game already in progress.' });
     if (room.players.size >= 8) return socket.emit('error', { msg: 'Room is full (max 8 players).' });
-
     room.players.set(socket.id, {
-      id: socket.id,
-      name: playerName.trim().slice(0, 20),
-      currentArticle: '',
-      articlePath: [],
-      clicks: 0,
-      finished: false,
-      finishTime: null,
-      rank: null,
+      id: socket.id, name: playerName.trim().slice(0, 20),
+      currentArticle: '', articlePath: [], clicks: 0,
+      finished: false, finishTime: null, rank: null,
+      userId: userId || null,
     });
-
     socket.join(code);
     socket.data.roomCode = code;
     socket.emit('lobby:joined', { code });
     io.to(code).emit('toast', { msg: `${playerName} joined the lobby`, type: 'info' });
     broadcastRoomState(room);
-    console.log(`[ROOM] ${code}: ${playerName} joined`);
   });
 
   socket.on('lobby:leave', () => handleLeave(socket));
@@ -538,27 +565,19 @@ io.on('connection', (socket) => {
     room.players.forEach(p => {
       p.currentArticle = challenge.start;
       p.articlePath = [challenge.start];
-      p.clicks = 0;
-      p.finished = false;
-      p.finishTime = null;
-      p.rank = null;
+      p.clicks = 0; p.finished = false; p.finishTime = null; p.rank = null;
     });
 
     broadcastRoomState(room);
     io.to(code).emit('game:starting', {
-      startArticle: room.startArticle,
-      startUrl: room.startUrl,
-      target: room.target,
-      targetUrl: room.targetUrl,
-      timeLimit: room.timeLimit,
+      startArticle: room.startArticle, startUrl: room.startUrl,
+      target: room.target, targetUrl: room.targetUrl, timeLimit: room.timeLimit,
     });
 
     room.gameTimer = setInterval(() => {
       const remaining = room.timeLimit - Math.floor((Date.now() - room.startTime) / 1000);
       io.to(code).emit('game:tick', { remaining });
     }, 1000);
-
-    console.log(`[GAME] ${code}: started — ${challenge.start} → ${challenge.target}`);
   });
 
   socket.on('game:navigate', ({ article, url }) => {
@@ -583,9 +602,11 @@ io.on('connection', (socket) => {
       player.finishTime = Date.now() - room.startTime;
       player.rank = 1;
 
-      if (userId) {
+      const playerUserId = player.userId;
+      if (playerUserId) {
+        // Save win record
         GameRecord.create({
-          userId: userId,
+          userId: playerUserId,
           username: player.name,
           startArticle: room.startArticle,
           targetArticle: room.target,
@@ -595,25 +616,31 @@ io.on('connection', (socket) => {
           path: player.articlePath
         }).catch(console.error);
 
-        User.findByIdAndUpdate(userId, {
-          $inc: {
-            'stats.gamesPlayed': 1,
-            'stats.gamesWon': 1,
-            'stats.totalClicks': player.clicks
-          }
+        User.findByIdAndUpdate(playerUserId, {
+          $inc: { 'stats.gamesPlayed': 1, 'stats.gamesWon': 1, 'stats.totalClicks': player.clicks }
         }).catch(console.error);
       }
 
-      socket.emit('game:won', {
-        rank: 1,
-        clicks: player.clicks,
-        time: player.finishTime,
-        path: player.articlePath,
-      });
+      socket.emit('game:won', { rank: 1, clicks: player.clicks, time: player.finishTime, path: player.articlePath });
+      io.to(code).emit('toast', { msg: `🏆 ${player.name} won in ${player.clicks} clicks!`, type: 'success' });
 
-      io.to(code).emit('toast', {
-        msg: `🏆 ${player.name} won in ${player.clicks} clicks!`,
-        type: 'success',
+      // Record loss for all non-finished players with accounts
+      room.players.forEach((p, sid) => {
+        if (sid === socket.id || !p.userId || p.finished) return;
+        GameRecord.create({
+          userId: p.userId,
+          username: p.name,
+          startArticle: room.startArticle,
+          targetArticle: room.target,
+          clicks: p.clicks,
+          timeTaken: null,
+          won: false,
+          path: p.articlePath
+        }).catch(console.error);
+
+        User.findByIdAndUpdate(p.userId, {
+          $inc: { 'stats.gamesPlayed': 1, 'stats.totalClicks': p.clicks }
+        }).catch(console.error);
       });
 
       endGame(room);
@@ -627,21 +654,14 @@ io.on('connection', (socket) => {
     const code = socket.data.roomCode;
     const room = rooms.get(code);
     if (!room || room.host !== socket.id) return;
-
     if (room.gameTimer) clearInterval(room.gameTimer);
     room.status = 'waiting';
     room.target = room.targetUrl = room.startArticle = room.startUrl = null;
     room.startTime = room.gameTimer = null;
-
     room.players.forEach(p => {
-      p.currentArticle = '';
-      p.articlePath = [];
-      p.clicks = 0;
-      p.finished = false;
-      p.finishTime = null;
-      p.rank = null;
+      p.currentArticle = ''; p.articlePath = []; p.clicks = 0;
+      p.finished = false; p.finishTime = null; p.rank = null;
     });
-
     io.to(code).emit('game:reset');
     broadcastRoomState(room);
   });
@@ -652,14 +672,15 @@ io.on('connection', (socket) => {
     handleLeave(socket);
 
     if (userId) {
-      userSockets.delete(userId.toString());
-
-      io.emit("user:offline", {
-        userId: userId.toString()
-      });
+      const socketSet = userSockets.get(userId);
+      if (socketSet) {
+        socketSet.delete(socket.id);
+        if (socketSet.size === 0) {
+          userSockets.delete(userId);
+          io.emit('user:offline', { userId });
+        }
+      }
     }
-
-    console.log(`[-] ${socket.id} disconnected | total: ${onlineCount}`);
   });
 });
 

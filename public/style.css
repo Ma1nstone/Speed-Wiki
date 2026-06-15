@@ -882,5 +882,5 @@ input { font-family: inherit; }
   box-shadow: 0 0 0 2px rgba(46,204,113,0.2);
 }
 .status-dot.offline {
-  background: #c8ccd1;
+  background: #ff0000;
 }

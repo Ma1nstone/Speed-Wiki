@@ -866,7 +866,9 @@ input { font-family: inherit; }
 }
 /* Override old stats-content grid since we now use stats-grid inside */
 #stats-content .stats-content {
-  display: contents;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
 }
 
 /* ── Status dots on friends list ── */

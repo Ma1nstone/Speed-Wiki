@@ -321,7 +321,7 @@ async function loadFriends() {
 
         
         li.appendChild(dot); li.appendChild(name);
-        li.appendChild(msgBtn); li.appendChild(invBtn); li.appendChild(removeBtn);
+        li.appendChild(msgBtn); li.appendChild(removeBtn); li.appendChild(invBtn);
         list.appendChild(li);
       });
     }

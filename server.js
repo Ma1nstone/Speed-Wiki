@@ -407,6 +407,7 @@ function getRoomPublicState(room) {
       id: p.id, name: p.name, currentArticle: p.currentArticle,
       articlePath: p.articlePath, clicks: p.clicks,
       finished: p.finished, finishTime: p.finishTime, rank: p.rank,
+      avatarUrl: p.avatarUrl || null,
     })),
   };
 }
@@ -511,11 +512,20 @@ io.on('connection', (socket) => {
       target: null, targetUrl: null, startArticle: null, startUrl: null,
       startTime: null, gameTimer: null, timeLimit: 999999,
     };
+    // Find avatar URL for this user
+    let creatorAvatarUrl = null;
+    if (userId) {
+      for (const ext of ['.jpg', '.jpeg', '.png', '.gif', '.webp']) {
+        const ap = path.join(avatarDir, `${userId}${ext}`);
+        if (fs.existsSync(ap)) { creatorAvatarUrl = `/avatars/${userId}${ext}`; break; }
+      }
+    }
     room.players.set(socket.id, {
       id: socket.id, name: playerName.trim().slice(0, 20),
       currentArticle: '', articlePath: [], clicks: 0,
       finished: false, finishTime: null, rank: null,
       userId: userId || null,
+      avatarUrl: creatorAvatarUrl,
     });
     rooms.set(code, room);
     socket.join(code);
@@ -532,11 +542,19 @@ io.on('connection', (socket) => {
     if (!room) return socket.emit('error', { msg: 'Room not found. Check the code and try again.' });
     if (room.status !== 'waiting') return socket.emit('error', { msg: 'Game already in progress.' });
     if (room.players.size >= 8) return socket.emit('error', { msg: 'Room is full (max 8 players).' });
+    let joinerAvatarUrl = null;
+    if (userId) {
+      for (const ext of ['.jpg', '.jpeg', '.png', '.gif', '.webp']) {
+        const ap = path.join(avatarDir, `${userId}${ext}`);
+        if (fs.existsSync(ap)) { joinerAvatarUrl = `/avatars/${userId}${ext}`; break; }
+      }
+    }
     room.players.set(socket.id, {
       id: socket.id, name: playerName.trim().slice(0, 20),
       currentArticle: '', articlePath: [], clicks: 0,
       finished: false, finishTime: null, rank: null,
       userId: userId || null,
+      avatarUrl: joinerAvatarUrl,
     });
     socket.join(code);
     socket.data.roomCode = code;

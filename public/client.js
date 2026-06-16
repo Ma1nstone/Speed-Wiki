@@ -203,12 +203,8 @@ function startFriendsPolling() {
   stopFriendsPolling();
   friendsInterval = setInterval(() => {
     const modal = document.getElementById("modal-friends");
-
-    // only run when friends modal is open
-    if (modal && !modal.classList.contains("hidden")) {
-      updateFriendStatusDots();
-    }
-  }, 1000);
+    if (modal && !modal.classList.contains("hidden")) loadFriends();
+  }, 5000);
 }
 
 function stopFriendsPolling() {
@@ -226,7 +222,7 @@ function startMessagesPolling() {
       refreshActiveChat();
     }
     pollUnread();
-  }, 1000);
+  }, 5000);
 }
 
 function stopMessagesPolling() {
@@ -267,7 +263,6 @@ async function loadFriends() {
         });
       });
     }
-  
 
     const reqSection = document.getElementById("friends-requests-section");
     const reqList = document.getElementById("friends-requests-list");
@@ -301,10 +296,6 @@ async function loadFriends() {
         dot.className = `status-dot ${isOnline ? 'online' : 'offline'}`;
         dot.title = isOnline ? 'Online' : 'Offline';
 
-        // 👇 add stable identifier for later updates
-        dot.dataset.id = fId;
-        dot.id = `status-dot-${fId}`;
-
         const name = document.createElement("span");
         name.className = "player-name";
         name.style.flex = "1";
@@ -329,7 +320,7 @@ async function loadFriends() {
         removeBtn.onclick = () => removeFriend(fId, f.username);
 
         li.appendChild(dot); li.appendChild(name);
-        li.appendChild(msgBtn); li.appendChild(removeBtn); li.appendChild(invBtn);
+        li.appendChild(msgBtn); li.appendChild(invBtn); li.appendChild(removeBtn);
         list.appendChild(li);
       });
     }
@@ -372,51 +363,6 @@ async function openMessagesAndChat(userId, username) {
   } catch (e) {}
   startMessagesPolling();
 }
-async function updateFriendStatusDots() {
-    try {
-      // 1. Get current friends list from server
-      const res = await fetch('/api/friends');
-      const data = await res.json();
-      if (data.error) return;
-
-      const friendIds = data.friends.map(f => f._id.toString());
-
-      // 2. Ask server who is online
-      let onlineIds = new Set();
-
-      if (friendIds.length > 0) {
-        await new Promise(resolve => {
-          socket.emit(
-            'users:online-check',
-            { userIds: friendIds },
-            ({ online }) => {
-              online.forEach(id => onlineIds.add(id.toString()));
-              resolve();
-            }
-          );
-        });
-      }
-
-      // 3. Update ONLY the green/grey dots
-      data.friends.forEach(f => {
-        const id = f._id.toString();
-
-        // find existing dot in DOM
-        const dot = document.getElementById(`status-dot-${id}`);
-        if (!dot) return;
-
-        const isOnline = onlineIds.has(id);
-
-        // only toggle classes, nothing else
-        dot.classList.toggle("online", isOnline);
-        dot.classList.toggle("offline", !isOnline);
-        dot.title = isOnline ? "Online" : "Offline";
-      });
-
-    } catch (err) {
-      console.error("Friend status update failed:", err);
-    }
-  }
 
 async function loadFriendRequestCount() {
   if (!currentUser) return;
@@ -567,7 +513,6 @@ async function openStats() {
     const s = data.stats;
     const winRate = s.gamesPlayed > 0 ? Math.round((s.gamesWon / s.gamesPlayed) * 100) : 0;
     document.getElementById("stats-content").innerHTML = `
-      <div class="stats-grid">
         <div class="stat-card">
           <div class="stat-val">${s.gamesPlayed}</div>
           <div class="stat-label">Games Played</div>
@@ -582,26 +527,29 @@ async function openStats() {
           <div class="stat-bar-wrap">
             <div class="stat-bar-fill" style="width:${winRate}%"></div>
           </div>
-        </div>
-      </div>`;
+        </div>`;
   } catch (e) {}
 }
 
 // ─── Profile modal ────────────────────────────────────────────────────────────
+function setProfilePreview(url) {
+  const preview = document.getElementById("profile-avatar-preview");
+  preview.style.backgroundImage = "";
+  preview.innerHTML = "";
+  if (url) {
+    const img = document.createElement("img");
+    img.src = url + "?t=" + Date.now();
+    img.style.cssText = "width:100%;height:100%;object-fit:cover;border-radius:50%;display:block";
+    preview.appendChild(img);
+  } else {
+    preview.textContent = currentUser.username.charAt(0).toUpperCase();
+  }
+}
+
 function openProfile() {
   const modal = document.getElementById("modal-profile");
   modal.classList.remove("hidden");
-
-  // Show current avatar
-  const preview = document.getElementById("profile-avatar-preview");
-  if (currentUser.avatarUrl) {
-    preview.style.backgroundImage = `url(${currentUser.avatarUrl}?t=${Date.now()})`;
-    preview.textContent = "";
-  } else {
-    preview.style.backgroundImage = "";
-    preview.textContent = currentUser.username.charAt(0).toUpperCase();
-  }
-
+  setProfilePreview(currentUser.avatarUrl || null);
   document.getElementById("profile-username-display").textContent = currentUser.username;
   document.getElementById("profile-avatar-error").classList.add("hidden");
   document.getElementById("profile-remove-avatar").classList.toggle("hidden", !currentUser.avatarUrl);
@@ -627,10 +575,7 @@ async function uploadAvatar(file) {
 
     currentUser.avatarUrl = data.avatarUrl;
     updateUserBarAvatar();
-
-    const preview = document.getElementById("profile-avatar-preview");
-    preview.style.backgroundImage = `url(${data.avatarUrl}?t=${Date.now()})`;
-    preview.textContent = "";
+    setProfilePreview(data.avatarUrl);
     document.getElementById("profile-remove-avatar").classList.remove("hidden");
     showToast("Profile picture updated!", "success");
   } catch (e) {
@@ -644,9 +589,7 @@ async function removeAvatar() {
     await fetch('/api/profile/avatar', { method: 'DELETE' });
     currentUser.avatarUrl = null;
     updateUserBarAvatar();
-    const preview = document.getElementById("profile-avatar-preview");
-    preview.style.backgroundImage = "";
-    preview.textContent = currentUser.username.charAt(0).toUpperCase();
+    setProfilePreview(null);
     document.getElementById("profile-remove-avatar").classList.add("hidden");
     showToast("Profile picture removed", "info");
   } catch (e) {
@@ -846,9 +789,15 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-profile-close").onclick = () => document.getElementById("modal-profile").classList.add("hidden");
 
   const avatarInput = document.getElementById("profile-avatar-input");
-  document.getElementById("profile-avatar-preview").onclick = () => avatarInput.click();
-  document.getElementById("btn-profile-upload").onclick = () => avatarInput.click();
-  avatarInput.onchange = (e) => { if (e.target.files[0]) uploadAvatar(e.target.files[0]); };
+  // Only the Upload button opens the file picker — NOT the preview (avoids double-trigger)
+  document.getElementById("btn-profile-upload").onclick = () => {
+    avatarInput.value = ""; // reset so same file can be re-selected
+    avatarInput.click();
+  };
+  avatarInput.onchange = (e) => {
+    const file = e.target.files[0];
+    if (file) uploadAvatar(file);
+  };
 
   document.getElementById("profile-remove-avatar").onclick = () => removeAvatar();
 
@@ -975,8 +924,7 @@ function updateScoreboard(players) {
     const li = document.createElement("li");
     li.className = "score-item" + (p.finished ? " score-finished" : "") + (p.id === socket.id ? " score-you" : "");
     const rank = document.createElement("span"); rank.className = "score-rank"; rank.textContent = i + 1;
-    const av = createAvatarElement(p);
-    av.classList.add("score-avatar");
+    const av = createAvatarElement(p); av.className = "player-avatar score-avatar";
     const info = document.createElement("div"); info.className = "score-info";
     const nameEl = document.createElement("div"); nameEl.className = "score-name"; nameEl.textContent = p.name + (p.id === socket.id ? " (you)" : "");
     const artEl = document.createElement("div"); artEl.className = "score-article"; artEl.textContent = p.finished ? "✓ Finished!" : (p.currentArticle || "—");
@@ -1254,23 +1202,6 @@ socket.on("game:reset", () => {
   showScreen("lobby");
 });
 
-function createAvatarElement(user) {
-  const avatar = document.createElement("div");
-  avatar.className = "player-avatar";
-
-  if (user.avatarUrl) {
-    const img = document.createElement("img");
-    img.src = user.avatarUrl + "?t=" + Date.now();
-    img.style.cssText = "width:100%;height:100%;border-radius:50%;object-fit:cover";
-    avatar.appendChild(img);
-  } else {
-    avatar.style.background = avatarColor(user.name || user.username);
-    avatar.textContent = (user.name || user.username).charAt(0).toUpperCase();
-  }
-
-  return avatar;
-}
-
 // ─── Avatar colors ────────────────────────────────────────────────────────────
 const AVATAR_COLORS = ["#3366CC","#2E7D32","#6A1B9A","#C62828","#AD6800","#00695C","#1565C0","#4527A0","#558B2F","#BF360C"];
 function avatarColor(name) {
@@ -1279,25 +1210,21 @@ function avatarColor(name) {
   return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }
 
-const avatarInput = document.getElementById("profile-avatar-input");
-const avatarPreview = document.getElementById("profile-avatar-preview");
-const uploadBtn = document.getElementById("btn-profile-upload");
-
-// open file picker
-uploadBtn.addEventListener("click", () => {
-  avatarInput.click();
-});
-
-// show preview instantly
-avatarInput.addEventListener("change", (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-
-  const reader = new FileReader();
-
-  reader.onload = function (event) {
-    avatarPreview.innerHTML = `<img src="${event.target.result}" />`;
-  };
-
-  reader.readAsDataURL(file);
-});
+// Creates a round avatar element — uses uploaded picture if available, else coloured initial
+function createAvatarElement(player) {
+  const div = document.createElement("div");
+  div.className = "player-avatar";
+  const name = player.name || player.username || "?";
+  const avatarUrl = player.avatarUrl || (player.id === socket.id && currentUser?.avatarUrl) || null;
+  if (avatarUrl) {
+    const img = document.createElement("img");
+    img.src = avatarUrl + "?t=" + Date.now();
+    img.style.cssText = "width:100%;height:100%;object-fit:cover;border-radius:50%;display:block";
+    img.onerror = () => { img.remove(); div.textContent = name.charAt(0).toUpperCase(); div.style.background = avatarColor(name); };
+    div.appendChild(img);
+  } else {
+    div.style.background = avatarColor(name);
+    div.textContent = name.charAt(0).toUpperCase();
+  }
+  return div;
+}

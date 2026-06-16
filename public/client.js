@@ -307,18 +307,19 @@ async function loadFriends() {
         msgBtn.textContent = "Message";
         msgBtn.onclick = () => openMessagesAndChat(fId, f.username);
 
-        const invBtn = document.createElement("button");
-        invBtn.className = "btn btn-primary";
-        invBtn.style.cssText = "padding:4px 10px;font-size:.8rem";
-        invBtn.textContent = "Invite";
-        invBtn.onclick = () => inviteFriend(fId, f.username);
-
         const removeBtn = document.createElement("button");
         removeBtn.className = "btn btn-ghost";
         removeBtn.style.cssText = "padding:4px 10px;font-size:.8rem;color:var(--red);border-color:#f9c5c5";
         removeBtn.textContent = "Remove";
         removeBtn.onclick = () => removeFriend(fId, f.username);
 
+        const invBtn = document.createElement("button");
+        invBtn.className = "btn btn-primary";
+        invBtn.style.cssText = "padding:4px 10px;font-size:.8rem";
+        invBtn.textContent = "Invite";
+        invBtn.onclick = () => inviteFriend(fId, f.username);
+
+        
         li.appendChild(dot); li.appendChild(name);
         li.appendChild(msgBtn); li.appendChild(invBtn); li.appendChild(removeBtn);
         list.appendChild(li);

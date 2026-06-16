@@ -699,7 +699,7 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-auth-submit").onclick = () => submitAuth(isRegisterMode);
 
   // Username click → profile modal
-  document.getElementById("user-bar-name").onclick = () => openProfile();
+  document.getElementById("user-bar").onclick = () => openProfile();
   document.getElementById("user-bar-name").style.cursor = "pointer";
 
   // Logout

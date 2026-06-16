@@ -128,8 +128,7 @@ function updateUserBarAvatar() {
     if (!img) {
       img = document.createElement("img");
       img.id = "user-bar-avatar";
-      img.style.cssText = "width:28px;height:28px;border-radius:50%;object-fit:cover;cursor:pointer;border:2px solid var(--border)";
-      img.onclick = () => document.getElementById("modal-profile").classList.remove("hidden");
+      img.style.cssText = "width:28px;height:28px;border-radius:50%;object-fit:cover;border:2px solid var(--border)";
       bar.insertBefore(img, bar.firstChild);
     }
     img.src = currentUser.avatarUrl + '?t=' + Date.now();
@@ -140,8 +139,7 @@ function updateUserBarAvatar() {
     if (!defAvatar) {
       defAvatar = document.createElement("div");
       defAvatar.id = "user-bar-default-avatar";
-      defAvatar.style.cssText = "width:28px;height:28px;border-radius:50%;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;cursor:pointer;flex-shrink:0";
-      defAvatar.onclick = () => document.getElementById("modal-profile").classList.remove("hidden");
+      defAvatar.style.cssText = "width:28px;height:28px;border-radius:50%;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;flex-shrink:0";
       bar.insertBefore(defAvatar, bar.firstChild);
     }
     defAvatar.textContent = currentUser.username.charAt(0).toUpperCase();
@@ -307,21 +305,20 @@ async function loadFriends() {
         msgBtn.textContent = "Message";
         msgBtn.onclick = () => openMessagesAndChat(fId, f.username);
 
-        const removeBtn = document.createElement("button");
-        removeBtn.className = "btn btn-ghost";
-        removeBtn.style.cssText = "padding:4px 10px;font-size:.8rem;color:var(--red);border-color:#f9c5c5";
-        removeBtn.textContent = "Remove";
-        removeBtn.onclick = () => removeFriend(fId, f.username);
-
         const invBtn = document.createElement("button");
         invBtn.className = "btn btn-primary";
         invBtn.style.cssText = "padding:4px 10px;font-size:.8rem";
         invBtn.textContent = "Invite";
         invBtn.onclick = () => inviteFriend(fId, f.username);
 
-        
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "btn btn-ghost";
+        removeBtn.style.cssText = "padding:4px 10px;font-size:.8rem;color:var(--red);border-color:#f9c5c5";
+        removeBtn.textContent = "Remove";
+        removeBtn.onclick = () => removeFriend(fId, f.username);
+
         li.appendChild(dot); li.appendChild(name);
-        li.appendChild(msgBtn); li.appendChild(removeBtn); li.appendChild(invBtn);
+        li.appendChild(msgBtn); li.appendChild(invBtn); li.appendChild(removeBtn);
         list.appendChild(li);
       });
     }
@@ -699,8 +696,11 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-auth-submit").onclick = () => submitAuth(isRegisterMode);
 
   // Username click → profile modal
-  document.getElementById("user-bar").onclick = () => openProfile();
-  document.getElementById("user-bar-name").style.cursor = "pointer";
+  document.getElementById("user-bar").onclick = (e) => {
+    if (e.target.closest("#btn-logout")) return;
+    openProfile();
+  };
+  document.getElementById("user-bar").style.cursor = "pointer";
 
   // Logout
   document.getElementById("btn-logout").onclick = async () => {

@@ -466,15 +466,47 @@ function handleLeave(socket) {
 io.on('connection', (socket) => {
   onlineCount++;
   broadcastOnlineCount();
+  socket.on("disconnect", () => {
+    onlineCount--;
+    broadcastOnlineCount();
+
+    if (userId && userSockets.has(userId)) {
+      const sockets = userSockets.get(userId);
+
+      sockets.delete(socket.id);
+
+      if (sockets.size === 0) {
+        userSockets.delete(userId);
+
+        io.emit("friend:status", {
+          userId,
+          online: false
+        });
+      }
+    }
+
+    handleLeave(socket);
+  });
 
   const userId = socket.request.session?.userId?.toString();
   const username = socket.request.session?.username;
 
   if (userId) {
-    // Store ALL sockets for this user (handle multiple tabs)
-    if (!userSockets.has(userId)) userSockets.set(userId, new Set());
+    const wasOffline =
+      !userSockets.has(userId) ||
+      userSockets.get(userId).size === 0;
+
+    if (!userSockets.has(userId))
+      userSockets.set(userId, new Set());
+
     userSockets.get(userId).add(socket.id);
-    io.emit('user:online', { userId });
+
+    if (wasOffline) {
+      io.emit("friend:status", {
+        userId,
+        online: true
+      });
+    }
   }
 
   socket.on('invite:send', ({ toId, roomCode }, callback) => {

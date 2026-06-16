@@ -33,6 +33,22 @@ socket.on("server:online", ({ count }) => {
   document.getElementById("lobby-online-count")?.textContent !== undefined && (document.getElementById("lobby-online-count").textContent = count);
 });
 
+socket.on("friend:status", ({ userId, online }) => {
+  const li = document.querySelector(
+    `[data-friend-id="${userId}"]`
+  );
+
+  if (!li) return;
+
+  const dot = li.querySelector(".status-dot");
+
+  if (!dot) return;
+
+  dot.classList.toggle("online", online);
+  dot.classList.toggle("offline", !online);
+  dot.title = online ? "Online" : "Offline";
+});
+
 // ─── Banned account handling ─────────────────────────────────────────────────
 socket.on("account:banned", () => {
   showBannedScreen();
@@ -197,13 +213,8 @@ function stopHomePolling() {
 }
 
 // ─── Friends modal polling ────────────────────────────────────────────────────
-function startFriendsPolling() {
-  stopFriendsPolling();
-  friendsInterval = setInterval(() => {
-    const modal = document.getElementById("modal-friends");
-    if (modal && !modal.classList.contains("hidden")) loadFriends();
-  }, 5000);
-}
+function startFriendsPolling() {}
+function stopFriendsPolling() {}
 
 function stopFriendsPolling() {
   if (friendsInterval) { clearInterval(friendsInterval); friendsInterval = null; }
@@ -751,12 +762,10 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-open-friends").onclick = () => {
     document.getElementById("modal-friends").classList.remove("hidden");
     loadFriends();
-    startFriendsPolling();
   };
   document.getElementById("btn-open-friends-lobby")?.addEventListener("click", () => {
     document.getElementById("modal-friends").classList.remove("hidden");
     loadFriends();
-    startFriendsPolling();
   });
   document.getElementById("btn-friends-close").onclick = () => {
     document.getElementById("modal-friends").classList.add("hidden");
@@ -893,6 +902,7 @@ socket.on("room:state", (room) => {
     room.players.forEach(p => {
       const li = document.createElement("li");
       li.className = "player-list-item";
+      li.dataset.friendId = fId;
       const avatar = createAvatarElement(p);
       const nameEl = document.createElement("span");
       nameEl.className = "player-name";

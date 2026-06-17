@@ -3,8 +3,8 @@ const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
 const multer = require('multer');
-const fs = require('fs');
-const userSockets = new Map(); // userId -> Set of socketIds
+const { v2: cloudinary } = require('cloudinary');
+const userSockets = new Map();
 
 const mongoose = require('mongoose');
 const session = require('express-session');
@@ -19,6 +19,9 @@ mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('MongoDB connected'))
   .catch(err => console.error('MongoDB error:', err));
 
+// ─── Cloudinary config (uses CLOUDINARY_URL env var automatically) ────────────
+cloudinary.config(true); // reads CLOUDINARY_URL from env
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -27,19 +30,9 @@ const io = new Server(server, {
   pingTimeout: 5000
 });
 
-// ─── Profile picture upload setup ────────────────────────────────────────────
-const avatarDir = path.join(__dirname, 'public', 'avatars');
-if (!fs.existsSync(avatarDir)) fs.mkdirSync(avatarDir, { recursive: true });
-
-const avatarStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, avatarDir),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
-    cb(null, `${req.session.userId}${ext}`);
-  }
-});
+// ─── Multer — memory storage (we stream straight to Cloudinary) ───────────────
 const avatarUpload = multer({
-  storage: avatarStorage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 2 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (!file.mimetype.startsWith('image/')) return cb(new Error('Images only'));
@@ -50,7 +43,6 @@ const avatarUpload = multer({
 // Serve public folder AND root (for favicon)
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.static(path.join(__dirname)));
-
 app.use(express.json());
 
 // ─── Session middleware ───────────────────────────────────────────────────────
@@ -72,16 +64,6 @@ const requireAuth = (req, res, next) => {
 };
 
 const DEV_USERNAME = 'Ma1nstone';
-
-// ─── Helper: get avatar URL for a userId ─────────────────────────────────────
-function getAvatarUrl(userId) {
-  if (!userId) return null;
-  for (const ext of ['.jpg', '.jpeg', '.png', '.gif', '.webp']) {
-    const p = path.join(avatarDir, `${userId}${ext}`);
-    if (fs.existsSync(p)) return `/avatars/${userId}${ext}`;
-  }
-  return null;
-}
 
 // ─── Auth routes ─────────────────────────────────────────────────────────────
 app.post('/api/register', async (req, res) => {
@@ -121,8 +103,7 @@ app.post('/api/login', async (req, res) => {
     req.session.userId = user._id;
     req.session.username = user.username;
 
-    const avatarUrl = getAvatarUrl(user._id.toString());
-    res.json({ success: true, username: user.username, userId: user._id, avatarUrl });
+    res.json({ success: true, username: user.username, userId: user._id, avatarUrl: user.avatarUrl || null });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -142,8 +123,7 @@ app.get('/api/me', async (req, res) => {
       return res.json({ loggedIn: true, banned: true, username: user.username, userId: user._id });
     }
     const isDev = user.username.toLowerCase() === DEV_USERNAME.toLowerCase();
-    const avatarUrl = getAvatarUrl(user._id.toString());
-    res.json({ loggedIn: true, username: user.username, userId: user._id, isDev, avatarUrl });
+    res.json({ loggedIn: true, username: user.username, userId: user._id, isDev, avatarUrl: user.avatarUrl || null });
   } catch (e) {
     res.json({ loggedIn: false });
   }
@@ -153,10 +133,24 @@ app.get('/api/me', async (req, res) => {
 app.post('/api/profile/avatar', requireAuth, avatarUpload.single('avatar'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    const avatarUrl = `/avatars/${req.file.filename}`;
 
-    // Update avatar in any active game rooms this user is in
     const userId = req.session.userId.toString();
+
+    // Upload buffer to Cloudinary, using userId as public_id so it overwrites old one
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { public_id: `speedwiki_avatars/${userId}`, overwrite: true, transformation: [{ width: 200, height: 200, crop: 'fill', gravity: 'face' }] },
+        (error, result) => error ? reject(error) : resolve(result)
+      );
+      stream.end(req.file.buffer);
+    });
+
+    const avatarUrl = result.secure_url;
+
+    // Save URL to MongoDB
+    await User.findByIdAndUpdate(userId, { avatarUrl });
+
+    // Update avatar in any active game rooms
     const socketSet = userSockets.get(userId);
     if (socketSet) {
       for (const sid of socketSet) {
@@ -165,10 +159,7 @@ app.post('/api/profile/avatar', requireAuth, avatarUpload.single('avatar'), asyn
           const room = rooms.get(sock.data.roomCode);
           if (room) {
             const player = room.players.get(sid);
-            if (player) {
-              player.avatarUrl = avatarUrl;
-              broadcastRoomState(room);
-            }
+            if (player) { player.avatarUrl = avatarUrl; broadcastRoomState(room); }
           }
         }
       }
@@ -176,16 +167,18 @@ app.post('/api/profile/avatar', requireAuth, avatarUpload.single('avatar'), asyn
 
     res.json({ success: true, avatarUrl });
   } catch (err) {
+    console.error('Avatar upload error:', err);
     res.status(500).json({ error: 'Upload failed' });
   }
 });
 
 app.delete('/api/profile/avatar', requireAuth, async (req, res) => {
   try {
-    for (const ext of ['.jpg', '.jpeg', '.png', '.gif', '.webp']) {
-      const p = path.join(avatarDir, `${req.session.userId}${ext}`);
-      if (fs.existsSync(p)) fs.unlinkSync(p);
-    }
+    const userId = req.session.userId.toString();
+    // Delete from Cloudinary
+    await cloudinary.uploader.destroy(`speedwiki_avatars/${userId}`);
+    // Remove URL from MongoDB
+    await User.findByIdAndUpdate(userId, { avatarUrl: null });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to remove avatar' });
@@ -262,22 +255,15 @@ app.post('/api/friends/remove', requireAuth, async (req, res) => {
     const me = await User.findById(req.session.userId);
     const them = await User.findById(friendId);
     if (!me) return res.status(404).json({ error: 'User not found' });
-
     me.friends = me.friends.filter(f => f.toString() !== friendId);
     await me.save();
-
     if (them) {
       them.friends = them.friends.filter(f => f.toString() !== req.session.userId.toString());
       await them.save();
     }
-
     await Message.deleteMany({
-      $or: [
-        { from: req.session.userId, to: friendId },
-        { from: friendId, to: req.session.userId }
-      ]
+      $or: [{ from: req.session.userId, to: friendId }, { from: friendId, to: req.session.userId }]
     });
-
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -287,7 +273,7 @@ app.post('/api/friends/remove', requireAuth, async (req, res) => {
 app.get('/api/friends', requireAuth, async (req, res) => {
   try {
     const me = await User.findById(req.session.userId)
-      .populate('friends', 'username')
+      .populate('friends', 'username avatarUrl')
       .populate('friendRequests.from', 'username');
     res.json({ friends: me.friends, requests: me.friendRequests });
   } catch (err) {
@@ -315,12 +301,10 @@ app.get('/api/messages/:withId', requireAuth, async (req, res) => {
         { from: req.params.withId, to: req.session.userId }
       ]
     }).sort({ createdAt: 1 }).limit(100);
-
     await Message.updateMany(
       { from: req.params.withId, to: req.session.userId, read: false },
       { read: true }
     );
-
     res.json({ messages: msgs });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -352,23 +336,15 @@ app.get('/api/stats/:username', async (req, res) => {
 app.post('/api/dev/ban', requireAuth, async (req, res) => {
   try {
     const me = await User.findById(req.session.userId);
-    if (!me || me.username.toLowerCase() !== DEV_USERNAME.toLowerCase()) {
-      return res.status(403).json({ error: 'Forbidden' });
-    }
+    if (!me || me.username.toLowerCase() !== DEV_USERNAME.toLowerCase()) return res.status(403).json({ error: 'Forbidden' });
     const { username } = req.body;
     const target = await User.findOne({ username: new RegExp(`^${username}$`, 'i') });
     if (!target) return res.status(404).json({ error: 'User not found' });
-    if (target.username.toLowerCase() === DEV_USERNAME.toLowerCase()) {
-      return res.status(400).json({ error: 'Cannot ban dev account' });
-    }
+    if (target.username.toLowerCase() === DEV_USERNAME.toLowerCase()) return res.status(400).json({ error: 'Cannot ban dev account' });
     target.banned = true;
     await target.save();
-
-    const targetSocketId = userSockets.get(target._id.toString());
-    if (targetSocketId) {
-      for (const sid of targetSocketId) io.to(sid).emit('account:banned');
-    }
-
+    const targetSocketSet = userSockets.get(target._id.toString());
+    if (targetSocketSet) for (const sid of targetSocketSet) io.to(sid).emit('account:banned');
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -378,9 +354,7 @@ app.post('/api/dev/ban', requireAuth, async (req, res) => {
 app.post('/api/dev/unban', requireAuth, async (req, res) => {
   try {
     const me = await User.findById(req.session.userId);
-    if (!me || me.username.toLowerCase() !== DEV_USERNAME.toLowerCase()) {
-      return res.status(403).json({ error: 'Forbidden' });
-    }
+    if (!me || me.username.toLowerCase() !== DEV_USERNAME.toLowerCase()) return res.status(403).json({ error: 'Forbidden' });
     const { username } = req.body;
     const target = await User.findOne({ username: new RegExp(`^${username}$`, 'i') });
     if (!target) return res.status(404).json({ error: 'User not found' });
@@ -450,7 +424,6 @@ function endGame(room) {
   if (room.status !== 'playing') return;
   if (room.gameTimer) clearInterval(room.gameTimer);
   room.status = 'finished';
-
   const leaderboard = Array.from(room.players.values())
     .map(p => ({ id: p.id, name: p.name, clicks: p.clicks, finished: p.finished, finishTime: p.finishTime, rank: p.rank, articlePath: p.articlePath }))
     .sort((a, b) => {
@@ -459,7 +432,6 @@ function endGame(room) {
       if (a.finished && b.finished) return a.finishTime - b.finishTime;
       return b.clicks - a.clicks;
     });
-
   const winner = leaderboard.find(p => p.finished) || null;
   io.to(room.code).emit('game:over', { leaderboard, winner });
   broadcastRoomState(room);
@@ -488,26 +460,19 @@ io.on('connection', (socket) => {
   onlineCount++;
   broadcastOnlineCount();
 
-  // Resolve userId/username from session at connection time
   const userId = socket.request.session?.userId?.toString();
   const username = socket.request.session?.username;
 
-  // Track socket → user mapping
   if (userId) {
     const wasOffline = !userSockets.has(userId) || userSockets.get(userId).size === 0;
     if (!userSockets.has(userId)) userSockets.set(userId, new Set());
     userSockets.get(userId).add(socket.id);
-
-    if (wasOffline) {
-      io.emit('friend:status', { userId, online: true });
-    }
+    if (wasOffline) io.emit('friend:status', { userId, online: true });
   }
 
-  // ── Single disconnect handler ──────────────────────────────────────────────
   socket.on('disconnect', () => {
     onlineCount = Math.max(0, onlineCount - 1);
     broadcastOnlineCount();
-
     if (userId) {
       const socketSet = userSockets.get(userId);
       if (socketSet) {
@@ -518,51 +483,44 @@ io.on('connection', (socket) => {
         }
       }
     }
-
     handleLeave(socket);
   });
 
   socket.on('users:online-check', ({ userIds }, callback) => {
     if (!Array.isArray(userIds)) return callback && callback({ online: [] });
-    const online = userIds.filter(id => {
-      const s = userSockets.get(id.toString());
-      return s && s.size > 0;
-    });
+    const online = userIds.filter(id => { const s = userSockets.get(id.toString()); return s && s.size > 0; });
     if (typeof callback === 'function') callback({ online });
   });
 
   socket.on('invite:send', ({ toId, roomCode }, callback) => {
     const toIdStr = toId?.toString();
     const socketSet = userSockets.get(toIdStr);
-
     if (!socketSet || socketSet.size === 0) {
       if (typeof callback === 'function') return callback({ success: false, reason: 'offline' });
       return socket.emit('error', { msg: 'User is offline' });
     }
-
-    for (const sid of socketSet) {
-      io.to(sid).emit('invite:receive', { fromUsername: username, roomCode });
-    }
-
+    for (const sid of socketSet) io.to(sid).emit('invite:receive', { fromUsername: username, roomCode });
     if (typeof callback === 'function') callback({ success: true });
   });
 
-  socket.on('lobby:create', ({ playerName }) => {
+  socket.on('lobby:create', async ({ playerName }) => {
     if (!playerName?.trim()) return socket.emit('error', { msg: 'Name required' });
     const code = generateRoomCode();
     const room = {
-      code, host: socket.id,
-      players: new Map(), status: 'waiting',
+      code, host: socket.id, players: new Map(), status: 'waiting',
       target: null, targetUrl: null, startArticle: null, startUrl: null,
       startTime: null, gameTimer: null, timeLimit: 999999,
     };
-    const creatorAvatarUrl = userId ? getAvatarUrl(userId) : null;
+    let creatorAvatarUrl = null;
+    if (userId) {
+      const user = await User.findById(userId).select('avatarUrl').lean();
+      creatorAvatarUrl = user?.avatarUrl || null;
+    }
     room.players.set(socket.id, {
       id: socket.id, name: playerName.trim().slice(0, 20),
       currentArticle: '', articlePath: [], clicks: 0,
       finished: false, finishTime: null, rank: null,
-      userId: userId || null,
-      avatarUrl: creatorAvatarUrl,
+      userId: userId || null, avatarUrl: creatorAvatarUrl,
     });
     rooms.set(code, room);
     socket.join(code);
@@ -571,7 +529,7 @@ io.on('connection', (socket) => {
     broadcastRoomState(room);
   });
 
-  socket.on('lobby:join', ({ roomCode, playerName }) => {
+  socket.on('lobby:join', async ({ roomCode, playerName }) => {
     const code = (roomCode || '').toUpperCase().trim();
     if (!playerName?.trim()) return socket.emit('error', { msg: 'Name required' });
     if (!code) return socket.emit('error', { msg: 'Room code required' });
@@ -579,13 +537,16 @@ io.on('connection', (socket) => {
     if (!room) return socket.emit('error', { msg: 'Room not found. Check the code and try again.' });
     if (room.status !== 'waiting') return socket.emit('error', { msg: 'Game already in progress.' });
     if (room.players.size >= 8) return socket.emit('error', { msg: 'Room is full (max 8 players).' });
-    const joinerAvatarUrl = userId ? getAvatarUrl(userId) : null;
+    let joinerAvatarUrl = null;
+    if (userId) {
+      const user = await User.findById(userId).select('avatarUrl').lean();
+      joinerAvatarUrl = user?.avatarUrl || null;
+    }
     room.players.set(socket.id, {
       id: socket.id, name: playerName.trim().slice(0, 20),
       currentArticle: '', articlePath: [], clicks: 0,
       finished: false, finishTime: null, rank: null,
-      userId: userId || null,
-      avatarUrl: joinerAvatarUrl,
+      userId: userId || null, avatarUrl: joinerAvatarUrl,
     });
     socket.join(code);
     socket.data.roomCode = code;
@@ -602,27 +563,19 @@ io.on('connection', (socket) => {
     if (!room) return;
     if (room.host !== socket.id) return socket.emit('error', { msg: 'Only the host can start.' });
     if (room.status !== 'waiting') return;
-
     const challenge = RACE_CHALLENGES[Math.floor(Math.random() * RACE_CHALLENGES.length)];
-    room.target = challenge.target;
-    room.targetUrl = challenge.targetUrl;
-    room.startArticle = challenge.start;
-    room.startUrl = challenge.startUrl;
-    room.status = 'playing';
-    room.startTime = Date.now();
-
+    room.target = challenge.target; room.targetUrl = challenge.targetUrl;
+    room.startArticle = challenge.start; room.startUrl = challenge.startUrl;
+    room.status = 'playing'; room.startTime = Date.now();
     room.players.forEach(p => {
-      p.currentArticle = challenge.start;
-      p.articlePath = [challenge.start];
+      p.currentArticle = challenge.start; p.articlePath = [challenge.start];
       p.clicks = 0; p.finished = false; p.finishTime = null; p.rank = null;
     });
-
     broadcastRoomState(room);
     io.to(code).emit('game:starting', {
       startArticle: room.startArticle, startUrl: room.startUrl,
       target: room.target, targetUrl: room.targetUrl, timeLimit: room.timeLimit,
     });
-
     room.gameTimer = setInterval(() => {
       const remaining = room.timeLimit - Math.floor((Date.now() - room.startTime) / 1000);
       io.to(code).emit('game:tick', { remaining });
@@ -633,67 +586,34 @@ io.on('connection', (socket) => {
     const code = socket.data.roomCode;
     const room = rooms.get(code);
     if (!room || room.status !== 'playing') return;
-
     const player = room.players.get(socket.id);
     if (!player || player.finished) return;
-
     player.currentArticle = article;
     player.articlePath.push(article);
     player.clicks++;
-
     const norm = s => decodeURIComponent(s).toLowerCase().replace(/_/g, ' ').trim();
     const targetSlug = norm(room.targetUrl.replace('/wiki/', ''));
     const incomingSlug = norm((url.split('/wiki/')[1] || article));
     const targetName = norm(room.target);
-
     if (incomingSlug === targetSlug || incomingSlug === targetName) {
       player.finished = true;
       player.finishTime = Date.now() - room.startTime;
       player.rank = 1;
-
       const playerUserId = player.userId;
       if (playerUserId) {
-        GameRecord.create({
-          userId: playerUserId,
-          username: player.name,
-          startArticle: room.startArticle,
-          targetArticle: room.target,
-          clicks: player.clicks,
-          timeTaken: player.finishTime,
-          won: true,
-          path: player.articlePath
-        }).catch(console.error);
-
-        User.findByIdAndUpdate(playerUserId, {
-          $inc: { 'stats.gamesPlayed': 1, 'stats.gamesWon': 1, 'stats.totalClicks': player.clicks }
-        }).catch(console.error);
+        GameRecord.create({ userId: playerUserId, username: player.name, startArticle: room.startArticle, targetArticle: room.target, clicks: player.clicks, timeTaken: player.finishTime, won: true, path: player.articlePath }).catch(console.error);
+        User.findByIdAndUpdate(playerUserId, { $inc: { 'stats.gamesPlayed': 1, 'stats.gamesWon': 1, 'stats.totalClicks': player.clicks } }).catch(console.error);
       }
-
       socket.emit('game:won', { rank: 1, clicks: player.clicks, time: player.finishTime, path: player.articlePath });
       io.to(code).emit('toast', { msg: `🏆 ${player.name} won in ${player.clicks} clicks!`, type: 'success' });
-
       room.players.forEach((p, sid) => {
         if (sid === socket.id || !p.userId || p.finished) return;
-        GameRecord.create({
-          userId: p.userId,
-          username: p.name,
-          startArticle: room.startArticle,
-          targetArticle: room.target,
-          clicks: p.clicks,
-          timeTaken: null,
-          won: false,
-          path: p.articlePath
-        }).catch(console.error);
-
-        User.findByIdAndUpdate(p.userId, {
-          $inc: { 'stats.gamesPlayed': 1, 'stats.totalClicks': p.clicks }
-        }).catch(console.error);
+        GameRecord.create({ userId: p.userId, username: p.name, startArticle: room.startArticle, targetArticle: room.target, clicks: p.clicks, timeTaken: null, won: false, path: p.articlePath }).catch(console.error);
+        User.findByIdAndUpdate(p.userId, { $inc: { 'stats.gamesPlayed': 1, 'stats.totalClicks': p.clicks } }).catch(console.error);
       });
-
       endGame(room);
       return;
     }
-
     broadcastRoomState(room);
   });
 
@@ -705,10 +625,7 @@ io.on('connection', (socket) => {
     room.status = 'waiting';
     room.target = room.targetUrl = room.startArticle = room.startUrl = null;
     room.startTime = room.gameTimer = null;
-    room.players.forEach(p => {
-      p.currentArticle = ''; p.articlePath = []; p.clicks = 0;
-      p.finished = false; p.finishTime = null; p.rank = null;
-    });
+    room.players.forEach(p => { p.currentArticle = ''; p.articlePath = []; p.clicks = 0; p.finished = false; p.finishTime = null; p.rank = null; });
     io.to(code).emit('game:reset');
     broadcastRoomState(room);
   });

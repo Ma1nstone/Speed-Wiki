@@ -4,7 +4,7 @@ const { Server } = require('socket.io');
 const path = require('path');
 const multer = require('multer');
 const fs = require('fs');
-const userSockets = new Map(); // userId -> socketId
+const userSockets = new Map(); // userId -> Set of socketIds
 
 const mongoose = require('mongoose');
 const session = require('express-session');
@@ -73,6 +73,16 @@ const requireAuth = (req, res, next) => {
 
 const DEV_USERNAME = 'Ma1nstone';
 
+// ─── Helper: get avatar URL for a userId ─────────────────────────────────────
+function getAvatarUrl(userId) {
+  if (!userId) return null;
+  for (const ext of ['.jpg', '.jpeg', '.png', '.gif', '.webp']) {
+    const p = path.join(avatarDir, `${userId}${ext}`);
+    if (fs.existsSync(p)) return `/avatars/${userId}${ext}`;
+  }
+  return null;
+}
+
 // ─── Auth routes ─────────────────────────────────────────────────────────────
 app.post('/api/register', async (req, res) => {
   try {
@@ -89,7 +99,7 @@ app.post('/api/register', async (req, res) => {
     req.session.userId = user._id;
     req.session.username = user.username;
 
-    res.json({ success: true, username: user.username, userId: user._id });
+    res.json({ success: true, username: user.username, userId: user._id, avatarUrl: null });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -105,18 +115,14 @@ app.post('/api/login', async (req, res) => {
     if (!match) return res.status(400).json({ error: 'Invalid username or password' });
 
     if (user.banned) {
-      return res.json({
-        success: true,
-        username: user.username,
-        userId: user._id,
-        banned: true
-      });
+      return res.json({ success: true, username: user.username, userId: user._id, banned: true });
     }
 
     req.session.userId = user._id;
     req.session.username = user.username;
 
-    res.json({ success: true, username: user.username, userId: user._id });
+    const avatarUrl = getAvatarUrl(user._id.toString());
+    res.json({ success: true, username: user.username, userId: user._id, avatarUrl });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -136,12 +142,7 @@ app.get('/api/me', async (req, res) => {
       return res.json({ loggedIn: true, banned: true, username: user.username, userId: user._id });
     }
     const isDev = user.username.toLowerCase() === DEV_USERNAME.toLowerCase();
-    // Find avatar
-    let avatarUrl = null;
-    for (const ext of ['.jpg', '.jpeg', '.png', '.gif', '.webp']) {
-      const p = path.join(avatarDir, `${user._id}${ext}`);
-      if (fs.existsSync(p)) { avatarUrl = `/avatars/${user._id}${ext}`; break; }
-    }
+    const avatarUrl = getAvatarUrl(user._id.toString());
     res.json({ loggedIn: true, username: user.username, userId: user._id, isDev, avatarUrl });
   } catch (e) {
     res.json({ loggedIn: false });
@@ -153,6 +154,26 @@ app.post('/api/profile/avatar', requireAuth, avatarUpload.single('avatar'), asyn
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     const avatarUrl = `/avatars/${req.file.filename}`;
+
+    // Update avatar in any active game rooms this user is in
+    const userId = req.session.userId.toString();
+    const socketSet = userSockets.get(userId);
+    if (socketSet) {
+      for (const sid of socketSet) {
+        const sock = io.sockets.sockets.get(sid);
+        if (sock?.data?.roomCode) {
+          const room = rooms.get(sock.data.roomCode);
+          if (room) {
+            const player = room.players.get(sid);
+            if (player) {
+              player.avatarUrl = avatarUrl;
+              broadcastRoomState(room);
+            }
+          }
+        }
+      }
+    }
+
     res.json({ success: true, avatarUrl });
   } catch (err) {
     res.status(500).json({ error: 'Upload failed' });
@@ -176,7 +197,10 @@ app.post('/api/online-status', requireAuth, async (req, res) => {
   try {
     const { userIds } = req.body;
     if (!Array.isArray(userIds)) return res.json({ online: [] });
-    const online = userIds.filter(id => userSockets.has(id.toString()));
+    const online = userIds.filter(id => {
+      const s = userSockets.get(id.toString());
+      return s && s.size > 0;
+    });
     res.json({ online });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -232,7 +256,6 @@ app.post('/api/friends/decline', requireAuth, async (req, res) => {
   }
 });
 
-// ─── Remove friend + delete messages ─────────────────────────────────────────
 app.post('/api/friends/remove', requireAuth, async (req, res) => {
   try {
     const { friendId } = req.body;
@@ -248,7 +271,6 @@ app.post('/api/friends/remove', requireAuth, async (req, res) => {
       await them.save();
     }
 
-    // Delete all messages between the two users
     await Message.deleteMany({
       $or: [
         { from: req.session.userId, to: friendId },
@@ -342,10 +364,9 @@ app.post('/api/dev/ban', requireAuth, async (req, res) => {
     target.banned = true;
     await target.save();
 
-    // Kick them if online
     const targetSocketId = userSockets.get(target._id.toString());
     if (targetSocketId) {
-      io.to(targetSocketId).emit('account:banned');
+      for (const sid of targetSocketId) io.to(sid).emit('account:banned');
     }
 
     res.json({ success: true });
@@ -466,64 +487,39 @@ function handleLeave(socket) {
 io.on('connection', (socket) => {
   onlineCount++;
   broadcastOnlineCount();
-  socket.on("disconnect", () => {
-    onlineCount--;
+
+  // Resolve userId/username from session at connection time
+  const userId = socket.request.session?.userId?.toString();
+  const username = socket.request.session?.username;
+
+  // Track socket → user mapping
+  if (userId) {
+    const wasOffline = !userSockets.has(userId) || userSockets.get(userId).size === 0;
+    if (!userSockets.has(userId)) userSockets.set(userId, new Set());
+    userSockets.get(userId).add(socket.id);
+
+    if (wasOffline) {
+      io.emit('friend:status', { userId, online: true });
+    }
+  }
+
+  // ── Single disconnect handler ──────────────────────────────────────────────
+  socket.on('disconnect', () => {
+    onlineCount = Math.max(0, onlineCount - 1);
     broadcastOnlineCount();
 
-    if (userId && userSockets.has(userId)) {
-      const sockets = userSockets.get(userId);
-
-      sockets.delete(socket.id);
-
-      if (sockets.size === 0) {
-        userSockets.delete(userId);
-
-        io.emit("friend:status", {
-          userId,
-          online: false
-        });
+    if (userId) {
+      const socketSet = userSockets.get(userId);
+      if (socketSet) {
+        socketSet.delete(socket.id);
+        if (socketSet.size === 0) {
+          userSockets.delete(userId);
+          io.emit('friend:status', { userId, online: false });
+        }
       }
     }
 
     handleLeave(socket);
-  });
-
-  const userId = socket.request.session?.userId?.toString();
-  const username = socket.request.session?.username;
-
-  if (userId) {
-    const wasOffline =
-      !userSockets.has(userId) ||
-      userSockets.get(userId).size === 0;
-
-    if (!userSockets.has(userId))
-      userSockets.set(userId, new Set());
-
-    userSockets.get(userId).add(socket.id);
-
-    if (wasOffline) {
-      io.emit("friend:status", {
-        userId,
-        online: true
-      });
-    }
-  }
-
-  socket.on('invite:send', ({ toId, roomCode }, callback) => {
-    const toIdStr = toId?.toString();
-    const socketSet = userSockets.get(toIdStr);
-
-    if (!socketSet || socketSet.size === 0) {
-      if (typeof callback === 'function') return callback({ success: false, reason: 'offline' });
-      return socket.emit('error', { msg: 'User is offline' });
-    }
-
-    // Send to all sockets for that user
-    for (const sid of socketSet) {
-      io.to(sid).emit('invite:receive', { fromUsername: username, roomCode });
-    }
-
-    if (typeof callback === 'function') callback({ success: true });
   });
 
   socket.on('users:online-check', ({ userIds }, callback) => {
@@ -535,6 +531,22 @@ io.on('connection', (socket) => {
     if (typeof callback === 'function') callback({ online });
   });
 
+  socket.on('invite:send', ({ toId, roomCode }, callback) => {
+    const toIdStr = toId?.toString();
+    const socketSet = userSockets.get(toIdStr);
+
+    if (!socketSet || socketSet.size === 0) {
+      if (typeof callback === 'function') return callback({ success: false, reason: 'offline' });
+      return socket.emit('error', { msg: 'User is offline' });
+    }
+
+    for (const sid of socketSet) {
+      io.to(sid).emit('invite:receive', { fromUsername: username, roomCode });
+    }
+
+    if (typeof callback === 'function') callback({ success: true });
+  });
+
   socket.on('lobby:create', ({ playerName }) => {
     if (!playerName?.trim()) return socket.emit('error', { msg: 'Name required' });
     const code = generateRoomCode();
@@ -544,14 +556,7 @@ io.on('connection', (socket) => {
       target: null, targetUrl: null, startArticle: null, startUrl: null,
       startTime: null, gameTimer: null, timeLimit: 999999,
     };
-    // Find avatar URL for this user
-    let creatorAvatarUrl = null;
-    if (userId) {
-      for (const ext of ['.jpg', '.jpeg', '.png', '.gif', '.webp']) {
-        const ap = path.join(avatarDir, `${userId}${ext}`);
-        if (fs.existsSync(ap)) { creatorAvatarUrl = `/avatars/${userId}${ext}`; break; }
-      }
-    }
+    const creatorAvatarUrl = userId ? getAvatarUrl(userId) : null;
     room.players.set(socket.id, {
       id: socket.id, name: playerName.trim().slice(0, 20),
       currentArticle: '', articlePath: [], clicks: 0,
@@ -574,13 +579,7 @@ io.on('connection', (socket) => {
     if (!room) return socket.emit('error', { msg: 'Room not found. Check the code and try again.' });
     if (room.status !== 'waiting') return socket.emit('error', { msg: 'Game already in progress.' });
     if (room.players.size >= 8) return socket.emit('error', { msg: 'Room is full (max 8 players).' });
-    let joinerAvatarUrl = null;
-    if (userId) {
-      for (const ext of ['.jpg', '.jpeg', '.png', '.gif', '.webp']) {
-        const ap = path.join(avatarDir, `${userId}${ext}`);
-        if (fs.existsSync(ap)) { joinerAvatarUrl = `/avatars/${userId}${ext}`; break; }
-      }
-    }
+    const joinerAvatarUrl = userId ? getAvatarUrl(userId) : null;
     room.players.set(socket.id, {
       id: socket.id, name: playerName.trim().slice(0, 20),
       currentArticle: '', articlePath: [], clicks: 0,
@@ -654,7 +653,6 @@ io.on('connection', (socket) => {
 
       const playerUserId = player.userId;
       if (playerUserId) {
-        // Save win record
         GameRecord.create({
           userId: playerUserId,
           username: player.name,
@@ -674,7 +672,6 @@ io.on('connection', (socket) => {
       socket.emit('game:won', { rank: 1, clicks: player.clicks, time: player.finishTime, path: player.articlePath });
       io.to(code).emit('toast', { msg: `🏆 ${player.name} won in ${player.clicks} clicks!`, type: 'success' });
 
-      // Record loss for all non-finished players with accounts
       room.players.forEach((p, sid) => {
         if (sid === socket.id || !p.userId || p.finished) return;
         GameRecord.create({
@@ -714,23 +711,6 @@ io.on('connection', (socket) => {
     });
     io.to(code).emit('game:reset');
     broadcastRoomState(room);
-  });
-
-  socket.on('disconnect', () => {
-    onlineCount = Math.max(0, onlineCount - 1);
-    broadcastOnlineCount();
-    handleLeave(socket);
-
-    if (userId) {
-      const socketSet = userSockets.get(userId);
-      if (socketSet) {
-        socketSet.delete(socket.id);
-        if (socketSet.size === 0) {
-          userSockets.delete(userId);
-          io.emit('user:offline', { userId });
-        }
-      }
-    }
   });
 });
 

@@ -19,7 +19,6 @@ let currentUser = null; // { username, userId, isDev, avatarUrl } or null
 let activeChatId = null;
 
 // Polling intervals
-let friendsInterval = null;
 let messagesInterval = null;
 let homeNotifInterval = null;
 
@@ -29,24 +28,22 @@ const WIKI_API_ZH = "https://zh.wikipedia.org/w/api.php";
 
 // ─── Online count ─────────────────────────────────────────────────────────────
 socket.on("server:online", ({ count }) => {
-  document.getElementById("home-online-count")?.textContent !== undefined && (document.getElementById("home-online-count").textContent = count);
-  document.getElementById("lobby-online-count")?.textContent !== undefined && (document.getElementById("lobby-online-count").textContent = count);
+  const homeEl = document.getElementById("home-online-count");
+  if (homeEl) homeEl.textContent = count;
+  const lobbyEl = document.getElementById("lobby-online-count");
+  if (lobbyEl) lobbyEl.textContent = count;
 });
 
+// ─── Friend status dots (real-time via socket) ────────────────────────────────
 socket.on("friend:status", ({ userId, online }) => {
-  const li = document.querySelector(
-    `[data-friend-id="${userId}"]`
-  );
-
-  if (!li) return;
-
-  const dot = li.querySelector(".status-dot");
-
-  if (!dot) return;
-
-  dot.classList.toggle("online", online);
-  dot.classList.toggle("offline", !online);
-  dot.title = online ? "Online" : "Offline";
+  // Update dots in the friends modal if it's open
+  document.querySelectorAll(`[data-friend-id="${userId}"]`).forEach(li => {
+    const dot = li.querySelector(".status-dot");
+    if (!dot) return;
+    dot.classList.toggle("online", online);
+    dot.classList.toggle("offline", !online);
+    dot.title = online ? "Online" : "Offline";
+  });
 });
 
 // ─── Banned account handling ─────────────────────────────────────────────────
@@ -55,12 +52,10 @@ socket.on("account:banned", () => {
 });
 
 function showBannedScreen() {
-  // Hide all screens and show banned state
   document.querySelectorAll(".screen").forEach(s => { s.classList.add("hidden"); s.classList.remove("active"); });
   const home = document.getElementById("screen-home");
   home.classList.remove("hidden"); home.classList.add("active");
 
-  // Hide everything in home except brand and show banned message
   document.getElementById("home-logged-out").classList.add("hidden");
   document.getElementById("home-logged-in").classList.add("hidden");
   document.getElementById("home-preview")?.classList.add("hidden");
@@ -127,11 +122,7 @@ function showLoggedIn() {
   document.getElementById("home-logged-out").classList.add("hidden");
   document.getElementById("home-logged-in").classList.remove("hidden");
   document.getElementById("user-bar-name").textContent = currentUser.username;
-
-  // Update avatar in user bar
   updateUserBarAvatar();
-
-  // Show dev panel if applicable
   const devPanel = document.getElementById("dev-panel");
   if (devPanel) devPanel.classList.toggle("hidden", !currentUser.isDev);
 }
@@ -139,26 +130,24 @@ function showLoggedIn() {
 function updateUserBarAvatar() {
   const bar = document.getElementById("user-bar");
   if (!bar) return;
-  let img = document.getElementById("user-bar-avatar");
+  // Remove existing avatar elements
+  const existingImg = document.getElementById("user-bar-avatar");
+  if (existingImg) existingImg.remove();
+  const existingDef = document.getElementById("user-bar-default-avatar");
+  if (existingDef) existingDef.remove();
+
   if (currentUser.avatarUrl) {
-    if (!img) {
-      img = document.createElement("img");
-      img.id = "user-bar-avatar";
-      img.style.cssText = "width:28px;height:28px;border-radius:50%;object-fit:cover;border:2px solid var(--border)";
-      bar.insertBefore(img, bar.firstChild);
-    }
+    const img = document.createElement("img");
+    img.id = "user-bar-avatar";
+    img.style.cssText = "width:28px;height:28px;border-radius:50%;object-fit:cover;border:2px solid var(--border)";
     img.src = currentUser.avatarUrl + '?t=' + Date.now();
+    bar.insertBefore(img, bar.firstChild);
   } else {
-    if (img) img.remove();
-    // Show a default avatar button
-    let defAvatar = document.getElementById("user-bar-default-avatar");
-    if (!defAvatar) {
-      defAvatar = document.createElement("div");
-      defAvatar.id = "user-bar-default-avatar";
-      defAvatar.style.cssText = "width:28px;height:28px;border-radius:50%;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;flex-shrink:0";
-      bar.insertBefore(defAvatar, bar.firstChild);
-    }
+    const defAvatar = document.createElement("div");
+    defAvatar.id = "user-bar-default-avatar";
+    defAvatar.style.cssText = "width:28px;height:28px;border-radius:50%;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;flex-shrink:0";
     defAvatar.textContent = currentUser.username.charAt(0).toUpperCase();
+    bar.insertBefore(defAvatar, bar.firstChild);
   }
 }
 
@@ -212,24 +201,13 @@ function stopHomePolling() {
   if (homeNotifInterval) { clearInterval(homeNotifInterval); homeNotifInterval = null; }
 }
 
-// ─── Friends modal polling ────────────────────────────────────────────────────
-function startFriendsPolling() {}
-function stopFriendsPolling() {}
-
-function stopFriendsPolling() {
-  if (friendsInterval) { clearInterval(friendsInterval); friendsInterval = null; }
-}
-
 // ─── Messages polling ─────────────────────────────────────────────────────────
 function startMessagesPolling() {
   stopMessagesPolling();
   messagesInterval = setInterval(() => {
     const modal = document.getElementById("modal-messages");
     if (!modal || modal.classList.contains("hidden")) return;
-    if (activeChatId) {
-      // Refresh current chat silently
-      refreshActiveChat();
-    }
+    if (activeChatId) refreshActiveChat();
     pollUnread();
   }, 5000);
 }
@@ -300,6 +278,7 @@ async function loadFriends() {
         const isOnline = onlineIds.has(fId);
         const li = document.createElement("li");
         li.className = "player-list-item";
+        li.dataset.friendId = fId; // ← set on the li so friend:status events can find it
 
         const dot = document.createElement("span");
         dot.className = `status-dot ${isOnline ? 'online' : 'offline'}`;
@@ -333,7 +312,6 @@ async function loadFriends() {
         list.appendChild(li);
       });
     }
-    // Also update the badge count
     loadFriendRequestCount();
   } catch (e) {}
 }
@@ -380,7 +358,6 @@ async function loadFriendRequestCount() {
     const data = await res.json();
     if (data.error) return;
     const count = data.requests.length;
-    // Update all friend request badges
     document.querySelectorAll('[id="friend-requests-badge"]').forEach(badge => {
       if (count > 0) { badge.textContent = count; badge.classList.remove("hidden"); }
       else badge.classList.add("hidden");
@@ -632,8 +609,10 @@ async function loadChallengePreview() {
     const res = await fetch('/api/challenges');
     const challenges = await res.json();
     const c = challenges[Math.floor(Math.random() * challenges.length)];
-    document.getElementById("preview-start")?.textContent && (document.getElementById("preview-start").textContent = c.start);
-    document.getElementById("preview-target-name")?.textContent !== undefined && (document.getElementById("preview-target-name").textContent = c.target);
+    const startEl = document.getElementById("preview-start");
+    if (startEl) startEl.textContent = c.start;
+    const targetEl = document.getElementById("preview-target-name");
+    if (targetEl) targetEl.textContent = c.target;
   } catch (e) {}
 }
 
@@ -769,7 +748,6 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   document.getElementById("btn-friends-close").onclick = () => {
     document.getElementById("modal-friends").classList.add("hidden");
-    stopFriendsPolling();
   };
   document.getElementById("btn-friends-add").onclick = async () => {
     const username = document.getElementById("friends-add-input").value.trim();
@@ -799,9 +777,8 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-profile-close").onclick = () => document.getElementById("modal-profile").classList.add("hidden");
 
   const avatarInput = document.getElementById("profile-avatar-input");
-  // Only the Upload button opens the file picker — NOT the preview (avoids double-trigger)
   document.getElementById("btn-profile-upload").onclick = () => {
-    avatarInput.value = ""; // reset so same file can be re-selected
+    avatarInput.value = "";
     avatarInput.click();
   };
   avatarInput.onchange = (e) => {
@@ -902,7 +879,7 @@ socket.on("room:state", (room) => {
     room.players.forEach(p => {
       const li = document.createElement("li");
       li.className = "player-list-item";
-      li.dataset.friendId = fId;
+      // NOTE: fId removed — this is a lobby player, not a friend
       const avatar = createAvatarElement(p);
       const nameEl = document.createElement("span");
       nameEl.className = "player-name";
@@ -1221,7 +1198,6 @@ function avatarColor(name) {
   return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }
 
-// Creates a round avatar element — uses uploaded picture if available, else coloured initial
 function createAvatarElement(player) {
   const div = document.createElement("div");
   div.className = "player-avatar";
